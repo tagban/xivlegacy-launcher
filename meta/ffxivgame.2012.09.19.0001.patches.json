@@ -1,0 +1,20 @@
+{
+  "about": "Instruction patches applied to ffxivgame.exe 2012.09.19.0001 before translation (recomp --patches). Addresses and our own replacement instructions only. The same changes Garlemald Client (and the original Seventh Umbral launcher) make to the exe in memory or on disk.",
+  "patches": [
+    {
+      "va": "0x00DA15E3",
+      "bytes": "B812E8E050",
+      "why": "mov eax, 0x50E0E812 in place of the call that reads the host's Unix time for the lobby's encryption time: pinned to 2012-12-31 01:19:14 UTC, as the servers' SERVER_UTC expects (a present-day clock is rejected as far in its future, and the lobby stops after the account list)"
+    },
+    {
+      "va": "0x00892550",
+      "bytes": "85C9740E8B49048B018B5014FFD28A08EB0230C98B44240488 08C20400",
+      "why": "a byte getter called with this = NULL from one of its callers (after the boat cinematic): test ecx first and return 0 through the out pointer"
+    },
+    {
+      "va": "0x00894B70",
+      "bytes": "90909090",
+      "why": "mov byte ptr [esi+0x20], 0 with the same uninitialized member as the getter above: the store is dropped"
+    }
+  ]
+}

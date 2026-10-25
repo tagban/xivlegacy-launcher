@@ -1,0 +1,25 @@
+[package]
+name = "xivlegacy-install"
+description = "Builds a FFXIV 1.23b install from the retail disc image and the ZIPATCH chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "xivlegacy_install"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xivlegacy-install"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+cab = "0.6"
+flate2 = "1"
+md-5 = "0.10"
+sevenz-rust2 = { version = "0.24.1", default-features = false }
+sha1 = "0.10"
+ureq = "2"
+hex = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }

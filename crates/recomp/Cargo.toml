@@ -1,0 +1,22 @@
+[package]
+name = "xivlegacy-recomp"
+version = "0.1.0"
+description = "Static recompiler (32-bit x86 -> C) for ffxivgame.exe"
+edition = "2021"
+publish = false
+
+[lib]
+name = "xivlegacy_recomp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xivlegacy-recomp"
+path = "src/main.rs"
+
+[dependencies]
+# capstone 5.0.6 (the Python pipeline uses 5.0.7: its X86 sources are identical, see disasm.rs)
+capstone-sys = { version = "0.18", default-features = false, features = ["full", "arch_x86"] }
+indexmap = "2"
+rayon = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+
