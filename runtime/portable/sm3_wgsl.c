@@ -843,11 +843,6 @@ static const char PRELUDE[] =
     "diagnostic(off, derivative_uniformity);\n"
     "\n"
     "struct Fix { posfix: vec4<f32>, alpha_ref: f32, alpha_func: u32, srgb_write: u32, srgb_mask: u32, one_mask: u32, zero: u32, pad0: u32, pad1: u32 };\n"
-    "struct VsU { fx: Fix, i: array<vec4<i32>, 16>, b: array<vec4<u32>, 4>, c: array<vec4<f32>, 256> };\n"
-    "struct PsU { fx: Fix, i: array<vec4<i32>, 16>, b: array<vec4<u32>, 4>, c: array<vec4<f32>, 224> };\n"
-    "@group(0) @binding(0) var<uniform> vu: VsU;\n"
-    "@group(0) @binding(1) var<uniform> pu: PsU;\n"
-    "\n"
     "fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> { return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045)); }\n"
     "fn linear_to_srgb(x: vec3<f32>) -> vec3<f32> {\n"
     "    let c = saturate(x);\n"
@@ -870,6 +865,26 @@ static const char PRELUDE[] =
     "        default: { return true; }\n"
     "    }\n"
     "}\n";
+
+/* the float constants a shader reads: past the highest one (all of them with relative addressing). The
+ * uniform blocks declare only these. */
+static unsigned const_count(const Sm3Shader* s)
+{
+    unsigned all = s->pixel ? 224 : 256, n = 1;
+    for (size_t i = 0; i < s->nins; ++i)
+        for (unsigned k = 0; k < s->ins[i].nsrc; ++k)
+        {
+            const Sm3Reg* r = &s->ins[i].src[k];
+            if (r->type == SM3_CONST2 || r->type == SM3_CONST3 || r->type == SM3_CONST4 || (r->type == SM3_CONST && r->rel))
+                return all;
+            if (r->type == SM3_CONST && r->num + 1u > n)
+                n = r->num + 1u;
+            /* a matrix instruction reads the rows after its register */
+            if (r->type == SM3_CONST && k == 1 && s->ins[i].op >= SM3_M4x4 && s->ins[i].op <= SM3_M3x2 && r->num + 4u > n)
+                n = r->num + 4u;
+        }
+    return n < all ? n : all;
+}
 
 /* relative constant reads: the shader's def registers win over the bound constants */
 static void crel_function(Ctx* c, const char* name, unsigned count)
@@ -926,6 +941,11 @@ char* sm3_wgsl_pair(const Sm3Shader* vs, const Sm3Shader* ps, const uint8_t in_k
     }
     Buf b = { 0 };
     put(&b, "%s", PRELUDE);
+    unsigned vsn = const_count(vs), psn = const_count(ps);
+    put(&b, "struct VsU { fx: Fix, i: array<vec4<i32>, 16>, b: array<vec4<u32>, 4>, c: array<vec4<f32>, %u> };\n"
+            "struct PsU { fx: Fix, i: array<vec4<i32>, 16>, b: array<vec4<u32>, 4>, c: array<vec4<f32>, %u> };\n"
+            "@group(0) @binding(0) var<uniform> vu: VsU;\n@group(0) @binding(1) var<uniform> pu: PsU;\n",
+        vsn, psn);
     Sem outs[16], ins[16];
     unsigned nout = vs_outputs(vs, outs, 16), nin = ps_inputs(ps, ins, 16);
     char name[32];
@@ -953,7 +973,7 @@ char* sm3_wgsl_pair(const Sm3Shader* vs, const Sm3Shader* ps, const uint8_t in_k
     prepass(&v);
     texture_decls(&v, &b, 4, 32);
     if (uses_rel_const(vs))
-        crel_function(&v, "crel_vs", 256);
+        crel_function(&v, "crel_vs", vsn);
     int vin = 0;
     for (size_t i = 0; i < vs->nins; ++i)
         if (vs->ins[i].op == SM3_DCL && vs->ins[i].dst.type == SM3_INPUT && vs->ins[i].dst.num < 16)
@@ -1029,7 +1049,7 @@ char* sm3_wgsl_pair(const Sm3Shader* vs, const Sm3Shader* ps, const uint8_t in_k
         put(&b, "\n");
         texture_decls(&p, &b, 16, 0);
         if (uses_rel_const(ps))
-            crel_function(&p, "crel_ps", 224);
+            crel_function(&p, "crel_ps", psn);
         int pin = 0;
         for (unsigned k = 0; k < nin; ++k)
             if (linked[k])

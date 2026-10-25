@@ -317,6 +317,8 @@ static WGPUCommandEncoder enc(void)
 
 static int g_targets_dirty = 1;
 static uint32_t g_submits;
+/* XIVLEGACY_WGPU_STATS: per-frame averages every 120 frames */
+static uint64_t g_st_submits, g_st_passes, g_st_shadows, g_st_ring, g_st_uploads_submit;
 
 /* the ring's bytes and the recorded commands to the GPU; wait: until it has run them */
 static void submit(int wait)
@@ -326,6 +328,7 @@ static void submit(int wait)
     for (uint32_t i = 0; i < g_nchunks; ++i)
         if (g_chunks[i].used)
         {
+            g_st_ring += g_chunks[i].used;
             wgpuQueueWriteBuffer(g_queue, g_chunks[i].gpu, 0, g_chunks[i].cpu, (g_chunks[i].used + 3u) & ~3u);
             g_chunks[i].used = 0;
         }
@@ -348,7 +351,7 @@ static void submit(int wait)
         {
             WGPUSubmissionIndex idx = wgpuQueueSubmitForIndex(g_queue, 1, &cb);
             wgpuCommandBufferRelease(cb);
-            g_submits++;
+            g_submits++, g_st_submits++;
             if (wait)
                 wgpuDevicePoll(g_dev, 1, &idx);
         }
@@ -755,7 +758,7 @@ static void tex_upload(G9Tex* t, uint32_t face, uint32_t level, const void* src,
         data = tmp, slice = pitch * rows;
     }
     if (t->used == g_serial)
-        submit(0); /* draws recorded with the old contents go first */
+        submit(0), g_st_uploads_submit++; /* draws recorded with the old contents go first */
     WGPUTexelCopyTextureInfo dst = { 0 };
     dst.texture = t->tex;
     dst.mipLevel = level;
@@ -856,6 +859,8 @@ G9Shader* g9_shader_create(const uint32_t* tokens, size_t n)
                 s->nconst = all;
             else if (r->type == SM3_CONST && r->num + 1u > s->nconst)
                 s->nconst = r->num + 1u < all ? r->num + 1u : all;
+            if (r->type == SM3_CONST && k == 1 && in->op >= SM3_M4x4 && in->op <= SM3_M3x2 && r->num + 4u > s->nconst)
+                s->nconst = r->num + 4u < all ? r->num + 4u : all; /* the matrix's rows */
         }
         if (in->has_dst && in->dst.type == SM3_COLOROUT && in->dst.num + 1u > s->colors)
             s->colors = (uint8_t)(in->dst.num + 1u > 4 ? 4 : in->dst.num + 1u);
@@ -1064,12 +1069,10 @@ static void make_bgl0(void)
     e[0].visibility = WGPUShaderStage_Vertex;
     e[0].buffer.type = WGPUBufferBindingType_Uniform;
     e[0].buffer.hasDynamicOffset = 1;
-    e[0].buffer.minBindingSize = SM3W_VS_SIZE;
     e[1].binding = 1;
     e[1].visibility = WGPUShaderStage_Fragment;
     e[1].buffer.type = WGPUBufferBindingType_Uniform;
     e[1].buffer.hasDynamicOffset = 1;
-    e[1].buffer.minBindingSize = SM3W_PS_SIZE;
     WGPUBindGroupLayoutDescriptor d = { 0 };
     d.label = NOLABEL;
     d.entryCount = 2;
@@ -1446,6 +1449,16 @@ static WGPURenderPipeline pipeline(const PipeKey* k, const char* src, int sync)
 /* --- passes, targets ------------------------------------------------------------------------------------------ */
 
 static uint32_t g_clear_flags, g_clear_color, g_clear_stencil;
+
+/* what the open pass has set, so a draw sets only what changes (wgpu records and checks every call) */
+static struct
+{
+    WGPURenderPipeline pipe;
+    WGPUBindGroup group1;
+    float vp[6];
+    uint32_t sc[4], stencil_ref, blend;
+    uint8_t vp_set, sc_set, ref_set, blend_set;
+} g_ps;
 static float g_clear_z;
 
 static void target_size(uint32_t* w, uint32_t* h)
@@ -1596,6 +1609,8 @@ static int begin_pass(void)
     }
     g_clear_flags = 0;
     g_pass = wgpuCommandEncoderBeginRenderPass(enc(), &p);
+    g_st_passes++;
+    memset(&g_ps, 0, sizeof g_ps);
     g_targets_dirty = 0;
     return 1;
 }
@@ -1633,6 +1648,10 @@ static void set_viewport(const uint32_t vp[6])
         h = 1;
     zn = zn < 0 ? 0 : zn > 1 ? 1 : zn;
     zf = zf < zn ? zn : zf > 1 ? 1 : zf;
+    float v[6] = { x, y, w, h, zn, zf };
+    if (g_ps.vp_set && !memcmp(v, g_ps.vp, sizeof v))
+        return;
+    memcpy(g_ps.vp, v, sizeof v), g_ps.vp_set = 1;
     wgpuRenderPassEncoderSetViewport(g_pass, x, y, w, h, zn, zf);
 }
 
@@ -1648,7 +1667,11 @@ static void set_scissor(const int32_t* r)
     }
     if (rr <= l || b <= t)
         l = t = rr = b = 0;
-    wgpuRenderPassEncoderSetScissorRect(g_pass, (uint32_t)l, (uint32_t)t, (uint32_t)(rr - l), (uint32_t)(b - t));
+    uint32_t sc[4] = { (uint32_t)l, (uint32_t)t, (uint32_t)(rr - l), (uint32_t)(b - t) };
+    if (g_ps.sc_set && !memcmp(sc, g_ps.sc, sizeof sc))
+        return;
+    memcpy(g_ps.sc, sc, sizeof sc), g_ps.sc_set = 1;
+    wgpuRenderPassEncoderSetScissorRect(g_pass, sc[0], sc[1], sc[2], sc[3]);
 }
 
 /* --- clears, copies, present: the utility shaders --------------------------------------------------------------- */
@@ -1853,6 +1876,7 @@ void g9_clear(uint32_t nrects, const int32_t* rects, uint32_t flags, uint32_t co
     float u[8] = { (color >> 16 & 255) / 255.0f, (color >> 8 & 255) / 255.0f, (color & 255) / 255.0f, (color >> 24) / 255.0f, z, 0, 0, 0 };
     memcpy(cpu, u, sizeof u);
     wgpuRenderPassEncoderSetPipeline(g_pass, p);
+    g_ps.pipe = NULL, g_ps.group1 = NULL, g_ps.ref_set = 0;
     uint32_t dyn = (uint32_t)off;
     wgpuRenderPassEncoderSetBindGroup(g_pass, 0, util_group(c), 1, &dyn);
     wgpuRenderPassEncoderSetStencilReference(g_pass, stencil & 0xFF);
@@ -1999,6 +2023,7 @@ static WGPUTextureView sample_view(G9Tex* t, uint64_t* uid)
             wgpuCommandEncoderCopyTextureToTexture(enc(), &s, &dd, &size);
         }
         t->shadow_at = t->writes;
+        g_st_shadows++;
         t->used = g_serial;
     }
     return t->shadow_view;
@@ -2192,14 +2217,16 @@ void g9_draw(const G9Draw* d)
         return;
     }
     WGPURenderPassEncoder e = g_pass;
-    wgpuRenderPassEncoderSetPipeline(e, pipe);
-    if (k.stencil)
-        wgpuRenderPassEncoderSetStencilReference(e, rs[57] & 0xFF);
+    if (g_ps.pipe != pipe)
+        wgpuRenderPassEncoderSetPipeline(e, pipe), g_ps.pipe = pipe;
+    if (k.stencil && (!g_ps.ref_set || g_ps.stencil_ref != (rs[57] & 0xFF)))
+        wgpuRenderPassEncoderSetStencilReference(e, rs[57] & 0xFF), g_ps.stencil_ref = rs[57] & 0xFF, g_ps.ref_set = 1;
     if (k.blend && (k.src == 14 || k.src == 15 || k.dst == 14 || k.dst == 15 || k.srca >= 14 || k.dsta >= 14))
     {
         uint32_t bc = rs[193];
         WGPUColor c = { (bc >> 16 & 255) / 255.0, (bc >> 8 & 255) / 255.0, (bc & 255) / 255.0, (bc >> 24) / 255.0 };
-        wgpuRenderPassEncoderSetBlendConstant(e, &c);
+        if (!g_ps.blend_set || g_ps.blend != bc)
+            wgpuRenderPassEncoderSetBlendConstant(e, &c), g_ps.blend = bc, g_ps.blend_set = 1;
     }
     set_viewport(d->viewport);
     set_scissor(rs[174] ? d->scissor : NULL);
@@ -2277,7 +2304,7 @@ void g9_draw(const G9Draw* d)
         if (!g)
         {
             if (g_groups1.n >= 16384)
-                map_clear(&g_groups1, release_group);
+                map_clear(&g_groups1, release_group), g_ps.group1 = NULL;
             WGPUBindGroupDescriptor bd = { 0 };
             bd.label = NOLABEL;
             bd.layout = layout1(k.tex_mask);
@@ -2286,7 +2313,8 @@ void g9_draw(const G9Draw* d)
             g = wgpuDeviceCreateBindGroup(g_dev, &bd);
             map_put(&g_groups1, &key, sizeof key, g);
         }
-        wgpuRenderPassEncoderSetBindGroup(e, 1, g, 0, NULL);
+        if (g_ps.group1 != g)
+            wgpuRenderPassEncoderSetBindGroup(e, 1, g, 0, NULL), g_ps.group1 = g;
     }
 
     /* streams: copied into the ring, long enough for what a draw of this size reads (WebGPU checks) */
@@ -2604,11 +2632,45 @@ static void configure_surface(uint32_t w, uint32_t h)
     c.width = w, c.height = h;
     c.alphaMode = WGPUCompositeAlphaMode_Auto;
     c.presentMode = g_present_mode;
+    /* three frames in flight, as the Metal back end has (wgpu's default of two held the world at
+     * exactly half the refresh rate whenever a frame ran past one refresh) */
+    WGPUSurfaceConfigurationExtras ex = { 0 };
+    ex.chain.sType = (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
+    ex.desiredMaximumFrameLatency = getenv("XIVLEGACY_WGPU_LATENCY") ? (uint32_t)atoi(getenv("XIVLEGACY_WGPU_LATENCY")) : 3;
+    c.nextInChain = &ex.chain;
     wgpuSurfaceConfigure(g_surface, &c);
     g_surface_w = w, g_surface_h = h;
 }
 
+static void present_frame(G9Tex* bb);
+
+/* XIVLEGACY_WGPU_STATS: how long the GPU takes from a frame's submit to its completion */
+static _Atomic uint64_t g_gpu_ns, g_gpu_n;
+static void on_work_done(WGPUQueueWorkDoneStatus status, WGPUStringView message, void* u1, void* u2)
+{
+    (void)status, (void)message, (void)u2;
+    uint64_t t0 = (uint64_t)(uintptr_t)u1;
+    atomic_fetch_add(&g_gpu_ns, rt_monotonic_ns() - t0);
+    atomic_fetch_add(&g_gpu_n, 1);
+}
+
+/* The frame goes to wgpu with the guest lock given up: wgpu records the frame's commands at the submit
+ * (its encoding is a large part of a frame) and waits for a drawable, and none of it touches guest
+ * memory, so the game's other threads run meanwhile. */
 void g9_present(G9Tex* bb)
+{
+    static int unlock = -1;
+    if (unlock < 0)
+        unlock = !getenv("XIVLEGACY_WGPU_KEEPLOCK");
+    int held = unlock && gt_holds();
+    if (held)
+        gt_unlock();
+    present_frame(bb);
+    if (held)
+        gt_lock();
+}
+
+static void present_frame(G9Tex* bb)
 {
     if (g_trace)
     {
@@ -2626,6 +2688,8 @@ void g9_present(G9Tex* bb)
         snap(bb);
     if (g_surface && bb && bb->view)
     {
+        /* the frame's commands go first, so the GPU works on them while the drawable is waited for */
+        submit(0);
         int pw = 0, ph = 0;
         if (g_window)
             SDL_GetWindowSizeInPixels(g_window, &pw, &ph);
@@ -2660,6 +2724,17 @@ void g9_present(G9Tex* bb)
             wgpuBindGroupRelease(g);
             bb->used = g_serial;
             submit(0);
+            static int stats = -1;
+            if (stats < 0)
+                stats = getenv("XIVLEGACY_WGPU_STATS") != NULL;
+            if (stats)
+            {
+                WGPUQueueWorkDoneCallbackInfo wd = { 0 };
+                wd.mode = WGPUCallbackMode_AllowSpontaneous;
+                wd.callback = on_work_done;
+                wd.userdata1 = (void*)(uintptr_t)rt_monotonic_ns();
+                wgpuQueueOnSubmittedWorkDone(g_queue, wd);
+            }
             wgpuSurfacePresent(g_surface);
             wgpuTextureViewRelease(v);
         }
@@ -2675,6 +2750,17 @@ void g9_present(G9Tex* bb)
     else
         submit(0);
     wgpuDevicePoll(g_dev, 0, NULL);
+    static int stats = -1;
+    if (stats < 0)
+        stats = getenv("XIVLEGACY_WGPU_STATS") != NULL;
+    if (stats && g_frame % 120 == 0)
+    {
+        uint64_t gn = atomic_exchange(&g_gpu_n, 0), gns = atomic_exchange(&g_gpu_ns, 0);
+        rt_log("[gfx9] wgpu a frame: %.1f submits (%.1f for uploads), %.1f passes, %.2f target copies, %.0f KB ring, submit to done %.1f ms\n",
+            g_st_submits / 120.0, g_st_uploads_submit / 120.0, g_st_passes / 120.0, g_st_shadows / 120.0, g_st_ring / 120.0 / 1024.0,
+            gn ? gns / 1e6 / gn : 0.0);
+        g_st_submits = g_st_passes = g_st_shadows = g_st_ring = g_st_uploads_submit = 0;
+    }
     if (g_frame == 1 || g_frame % 1024 == 0)
         rt_log("[gfx9] frame %llu: %llu draws drawn, %llu skipped so far\n", (unsigned long long)g_frame, (unsigned long long)g_draws,
             (unsigned long long)g_skipped);
@@ -2805,7 +2891,7 @@ int g9_init(void* window, int vsync)
         return 0;
     }
     g_window = (SDL_Window*)window;
-    if (g_window)
+    if (g_window && !getenv("XIVLEGACY_WGPU_OFFSCREEN")) /* debugging: draw without presenting */
         g_surface = make_surface(g_window);
     WGPURequestAdapterOptions ao = { 0 };
     ao.powerPreference = WGPUPowerPreference_HighPerformance;
@@ -2893,6 +2979,9 @@ int g9_init(void* window, int vsync)
                 immediate |= caps.presentModes[i] == WGPUPresentMode_Immediate, mailbox |= caps.presentModes[i] == WGPUPresentMode_Mailbox;
             if (!bgra && caps.formatCount)
                 g_surface_fmt = caps.formats[0];
+            const char* pm = getenv("XIVLEGACY_WGPU_PRESENT"); /* fifo, mailbox, immediate: over the game's choice */
+            if (pm)
+                vsync = !strcmp(pm, "fifo") ? 1 : 0, immediate &= strcmp(pm, "mailbox") != 0;
             g_present_mode = vsync ? WGPUPresentMode_Fifo : immediate ? WGPUPresentMode_Immediate : mailbox ? WGPUPresentMode_Mailbox : WGPUPresentMode_Fifo;
             wgpuSurfaceCapabilitiesFreeMembers(caps);
         }
@@ -2904,7 +2993,7 @@ int g9_init(void* window, int vsync)
     WGPUAdapterInfo info = { 0 };
     wgpuAdapterGetInfo(g_adapter, &info);
     static const char* const backends[] = { "?", "null", "WebGPU", "D3D11", "D3D12", "Metal", "Vulkan", "OpenGL", "OpenGL ES" };
-    rt_log("[gfx9] wgpu (%s) on %.*s%s%s%s%s%s\n", (unsigned)info.backendType < 9 ? backends[info.backendType] : "?",
+    rt_log("[gfx9] wgpu (%s, present mode %d) on %.*s%s%s%s%s%s\n", (unsigned)info.backendType < 9 ? backends[info.backendType] : "?", (int)g_present_mode,
         info.device.data ? (int)(info.device.length == WGPU_STRLEN ? strlen(info.device.data) : info.device.length) : 0,
         info.device.data ? info.device.data : "", g_surface ? "" : ", offscreen", g_has_bc ? "" : ", no BC (decoded on upload)",
         g_has_swizzle ? "" : ", no swizzles", g_has_f32filter ? "" : ", float32 unfilterable", g_has_d32s8 ? "" : ", no D32S8");
