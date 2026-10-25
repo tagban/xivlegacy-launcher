@@ -38,6 +38,9 @@ void rt_set_image(uint32_t runtime_base)
     rt_reloc_delta = runtime_base - rt_image_base;
     rt_image_lo = runtime_base;
     rt_image_hi = runtime_base + rt_image_size;
+#ifdef XIVLEGACY_SPLIT
+    *xiv_game->reloc_delta = rt_reloc_delta; /* the translation's own copy (RD) */
+#endif
 }
 
 static GuestFn lookup_uncached(uint32_t target)
@@ -88,7 +91,12 @@ void rt_call_indirect(Guest* g, uint32_t target)
 
 /* Nonzero while a guest thread waits for the guest lock; the platform bridge maintains it and
  * installs the yield. Without a bridge (tests/difftest.c) there is one thread and no lock. */
+#ifdef XIVLEGACY_SPLIT
+static volatile uint32_t g_lock_contended; /* until the game module's takes over (xiv_game_bind) */
+volatile uint32_t* rt_lock_contended_ptr = &g_lock_contended;
+#else
 volatile uint32_t rt_lock_contended;
+#endif
 static void (*g_yield)(void);
 
 void rt_set_yield(void (*yield)(void)) { g_yield = yield; }

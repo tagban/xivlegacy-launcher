@@ -1,6 +1,12 @@
 """Build driver (clang, POSIX hosts): the translated game plus the portable runtime.
 
-  python3 tools/build.py boot [--game <1.23b install>] [--run]   the headless boot test
+  python3 tools/build.py boot [--game <1.23b install>] [--run]   the game and runtime in one program
+  python3 tools/build.py host                                     the runtime alone (XIVLEGACY_SPLIT)
+  python3 tools/build.py module [--out <file>]                    the translation as a game module
+
+The host carries the runtime, graphics, sound, input and networking, with none of the game's code,
+so it can ship; the module is the translation of one player's ffxivgame.exe, made on their machine
+(runtime/xiv_game.h). CC picks the module's compiler (default clang; "zig cc" works too).
 
 The translation (generated/c, from crates/recomp) compiles once into build/gen/*.o and is reused;
 only stale objects rebuild. Everything under generated/ and build/ is derived from Square Enix's
@@ -49,7 +55,7 @@ def newest_header(dirs):
     return t
 
 
-def compile_stale(sources, objdir, flags, header_dirs=()):
+def compile_stale(sources, objdir, flags, header_dirs=(), cc=None):
     os.makedirs(os.path.join(ROOT, objdir), exist_ok=True)
     jobs, objs = [], []
     headers = newest_header(header_dirs)
@@ -59,7 +65,7 @@ def compile_stale(sources, objdir, flags, header_dirs=()):
         src, dst = os.path.join(ROOT, s), os.path.join(ROOT, obj)
         if not os.path.exists(dst) or os.path.getmtime(dst) < max(os.path.getmtime(src), headers):
             extra = ['-x', 'objective-c', '-fno-objc-arc'] if s.endswith('.m') else []
-            jobs.append(['clang', '-c'] + CFLAGS + flags + extra + [s, '-o', obj])
+            jobs.append((cc or ['clang']) + ['-c'] + CFLAGS + flags + extra + [s, '-o', obj])
     if jobs:
         t = time.time()
         failed = []
@@ -110,13 +116,44 @@ def boot(args):
         run(['build/boot', args.game])
 
 
+MODULE_EXT = '.dylib' if sys.platform == 'darwin' else '.dll' if sys.platform == 'win32' else '.so'
+
+
+def host(args):
+    """build/xivlegacy-host: the runtime without the translation; it loads the game with --module."""
+    flags = ['-O1', '-Wall', '-DXIVLEGACY_SPLIT']
+    flags_changed('build/obj/host', flags)
+    objs = compile_stale(RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c'], 'build/obj/host', flags,
+                         ('runtime', 'runtime/portable'))
+    run(['clang', '-o', 'build/xivlegacy-host'] + objs + LIBS)
+    print('built build/xivlegacy-host; run: build/xivlegacy-host --module build/xivlegacy-game%s <1.23b install>'
+          % MODULE_EXT)
+
+
+def module(args):
+    """build/xivlegacy-game.<ext>: the translation (generated/c) as a shared library (xiv_module.c)."""
+    import shlex
+    cc = shlex.split(os.environ.get('CC', 'clang'))
+    flags = GEN_FLAGS + ['-fPIC', '-fvisibility=hidden']
+    flags_changed('build/mod', flags)
+    objs = compile_stale(generated() + ['runtime/xiv_module.c'], 'build/mod', flags, cc=cc)
+    out = args.out or os.path.join('build', 'xivlegacy-game' + MODULE_EXT)
+    if sys.platform == 'darwin':
+        link = ['-dynamiclib', '-o', out] + objs + ['-Wl,-install_name,@rpath/' + os.path.basename(out)]
+    else:
+        link = ['-shared', '-o', out] + objs + ['-lm']
+    run(cc + link)
+    print('built ' + out)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('target', choices=['boot'])
+    ap.add_argument('target', choices=['boot', 'host', 'module'])
     ap.add_argument('--game')
     ap.add_argument('--run', action='store_true')
+    ap.add_argument('--out')
     args = ap.parse_args()
-    {'boot': boot}[args.target](args)
+    {'boot': boot, 'host': host, 'module': module}[args.target](args)
 
 
 if __name__ == '__main__':

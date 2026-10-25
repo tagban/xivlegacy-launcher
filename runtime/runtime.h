@@ -17,12 +17,26 @@ GuestFn rt_lookup(uint32_t addr);
 /* Index of a translated function in rt_table, or -1. */
 int rt_index(uint32_t addr);
 
-/* Generated with the translation (table.c). */
+/* Generated with the translation (table.c); a host built without it (XIVLEGACY_SPLIT) reads them
+ * from the game module it loaded (xiv_game.h), under the same names. */
+#ifndef XIVLEGACY_SPLIT
 extern const RtEntry rt_table[];
 extern const unsigned rt_table_count;
 extern const unsigned char rt_table_patch[];
 extern const uint32_t rt_image_base, rt_image_timestamp, rt_image_size, rt_image_text_rva, rt_image_text_size,
     rt_image_oep;
+#else
+#include "xiv_game.h"
+#define rt_table (xiv_game->table)
+#define rt_table_count (*xiv_game->table_count)
+#define rt_table_patch (xiv_game->table_patch)
+#define rt_image_base (*xiv_game->image_base)
+#define rt_image_timestamp (*xiv_game->image_timestamp)
+#define rt_image_size (*xiv_game->image_size)
+#define rt_image_text_rva (*xiv_game->image_text_rva)
+#define rt_image_text_size (*xiv_game->image_text_size)
+#define rt_image_oep (*xiv_game->image_oep)
+#endif
 
 /* The image is at runtime_base: sets the relocation delta and the image range. */
 void rt_set_image(uint32_t runtime_base);

@@ -420,7 +420,9 @@ static const ShimDef GAME_LOG[] = {
 /* The game's other log: text it streams (std::operator<<(ostream&, const char*), 0x4E7290) into its
  * log stream at 0x1363D30, which goes nowhere in retail. The recompiler's hook point at that
  * function's entry (recomp --hooks streamlog=0x4e7290) hands it here. */
+#ifndef XIVLEGACY_SPLIT
 extern GuestFn rt_hook_streamlog __attribute__((weak));
+#endif
 
 static void hook_streamlog(Guest* g)
 {
@@ -464,8 +466,13 @@ void xiv_game_log_poll(void)
     if (!thunk)
     {
         thunk = thunk_for("xivlegacy", "GameLog");
+#ifdef XIVLEGACY_SPLIT
+        if (xiv_game->hook_streamlog)
+            *xiv_game->hook_streamlog = hook_streamlog;
+#else
         if (&rt_hook_streamlog)
             rt_hook_streamlog = hook_streamlog;
+#endif
     }
     static const uint32_t slots[] = { 0x12651B4u, 0x12EF7E8u, 0x12EE6F8u };
     for (unsigned i = 0; i < 3; ++i)

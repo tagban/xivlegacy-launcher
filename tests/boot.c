@@ -16,6 +16,8 @@
 #include <sys/ucontext.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 
 #include <SDL3/SDL.h>
 
@@ -875,6 +877,29 @@ int main(int argc, char** argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     g_main_thread = pthread_self();
     signal(SIGUSR2, on_stack_request);
+#ifdef XIVLEGACY_SPLIT
+    /* --module <file>: the game, made on this machine from its own ffxivgame.exe (xiv_game.h) */
+    const char* module = NULL;
+    for (int i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--module"))
+        {
+            module = argv[i + 1];
+            memmove(&argv[i], &argv[i + 2], (size_t)(argc - i - 1) * sizeof *argv);
+            argc -= 2;
+            break;
+        }
+    if (!module)
+    {
+        printf("usage: xivlegacy-host --module <game module> <1.23b install folder> [session id]\n");
+        return 2;
+    }
+    char module_err[512];
+    if (!xiv_game_load(module, module_err, sizeof module_err))
+    {
+        printf("%s\n", module_err);
+        return 1;
+    }
+#endif
     if (argc < 2)
     {
         printf("usage: boot <1.23b install folder>\n");
@@ -889,6 +914,9 @@ int main(int argc, char** argv)
         return 1;
     }
     printf("guest window at %p\n", (void*)rt_guest_base);
+#ifdef XIVLEGACY_SPLIT
+    xiv_game_bind();
+#endif
     gt_init();
     vfs_mount(GAME_DIR, argv[1]);
     /* XIVLEGACY_USER: the host folder behind C:\\users\\Player (default ./xiv-user) */
@@ -917,12 +945,21 @@ int main(int argc, char** argv)
     user32_init();
     dinput_init();
     ws2_init();
-    /* XIVLEGACY_LOBBY: the server's IPv4 address (default 127.0.0.1, a local Garlemald) */
+    /* XIVLEGACY_LOBBY: the server, by name or IPv4 address (default 127.0.0.1, a local server) */
     {
         const char* lobby = getenv("XIVLEGACY_LOBBY") ? getenv("XIVLEGACY_LOBBY") : "127.0.0.1";
-        unsigned a, b, c, d;
-        if (sscanf(lobby, "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
-            ws2_map_host("lobby01.ffxiv.com", (a << 24) | (b << 16) | (c << 8) | d);
+        struct addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET;
+        if (getaddrinfo(lobby, NULL, &hints, &res) == 0 && res)
+        {
+            uint32_t ip = ntohl(((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr);
+            ws2_map_host("lobby01.ffxiv.com", ip);
+            printf("lobby: %s (%u.%u.%u.%u)\n", lobby, ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
+            freeaddrinfo(res);
+        }
+        else
+            printf("lobby: can't find the server %s\n", lobby);
     }
     ole_init();
     vfs_init(GAME_DIR);

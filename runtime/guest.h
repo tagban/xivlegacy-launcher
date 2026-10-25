@@ -160,7 +160,13 @@ static inline void rt_longjmp(Guest* g)
  * it on every host->guest entry; a loop that never calls out would starve the other guest threads,
  * so every backward jump is a safepoint that yields when another thread is waiting. The same
  * hand-off is what gives arm64 x86's memory ordering for the guest. */
+#ifdef XIVLEGACY_SPLIT
+/* the flag is the game module's (xiv_game.h), so its translation reads it directly */
+extern volatile uint32_t* rt_lock_contended_ptr;
+#define rt_lock_contended (*rt_lock_contended_ptr)
+#else
 extern volatile uint32_t rt_lock_contended;
+#endif
 void rt_safepoint(void);
 #define RT_SAFEPOINT do { if (rt_lock_contended) rt_safepoint(); } while (0)
 
