@@ -23,7 +23,7 @@ usage:
       Which download links setup will use, and where they came from (sources.json
       beside the program, else the repository's copy, else built in).
 debugging:
-  xivlegacy-install iso-ls <iso> [dir] | iso-sha1 <iso> <path> | disc-extract <iso> <out> [skip] | dx-extract <iso> <out>";
+  xivlegacy-install iso-ls <iso> [dir] | iso-sha1 <iso> <path> | disc-extract <iso> <out> [skip] | dx-extract <iso> <out> | dx-installer <iso> <out>";
 
 /// One updating terminal line: step, percent, bytes, speed, time left.
 struct Terminal {
@@ -183,6 +183,10 @@ fn main() -> Result<()> {
                 h.update(&buf[..n]);
             }
             println!("{:x}  {}", h.finalize(), args[3]);
+        }
+        Some("dx-installer") => {
+            directx::copy_installer(Path::new(&args[2]), Path::new(&args[3]))?;
+            eprintln!("DirectX installer copied to {}", args[3]);
         }
         Some("dx-extract") => {
             directx::install(Path::new(&args[2]), Path::new(&args[3]))?;

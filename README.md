@@ -28,9 +28,13 @@ the preserved copies from archive.org.
 Windows may warn that the program is from an unknown publisher (it isn't
 code-signed yet): choose **More info → Run anyway**.
 
-What it changes: nothing outside its own folders. The game's DirectX 9 files
-(`d3dx9_41.dll`, `xinput1_3.dll`) are taken from the disc's own DirectX
-installer and put next to the game. The server address is written into the
+What it changes: nothing outside its own folders, except DirectX audio. The
+game's DirectX 9 files (`d3dx9_41.dll`, `xinput1_3.dll`) are taken from the
+disc's own DirectX installer and put next to the game. The game's audio
+(XAudio2 2.4) has to be registered by Microsoft's DirectX installer, so the
+first time you Join, if it's missing, XIVLegacy runs that installer silently
+(from the disc, or Microsoft's own download for older installs) and Windows
+asks for permission once. The server address is written into the
 game's memory when it starts; the game files on disk stay as installed.
 Passwords are kept only if you tick **Remember me**, in Windows Credential
 Manager.

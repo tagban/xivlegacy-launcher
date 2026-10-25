@@ -160,8 +160,12 @@ pub fn run(plan: &Plan, report: Arc<dyn Report>) -> Result<()> {
         let _t = Ticker::start(report.clone(), Phase::Disc, counter.clone(), disc.total_size(), detail);
         disc.install(&plan.out, 0, &counter)?;
     }
-    // The DirectX 9 libraries the game needs, from the disc's redistributable.
+    // The DirectX 9 libraries the game needs, from the disc's redistributable;
+    // on Windows also the installer itself, for XAudio2 (see directx.rs).
     crate::directx::install(&iso, &plan.out)?;
+    if cfg!(windows) {
+        crate::directx::copy_installer(&iso, &crate::directx::installer_dir(&plan.out))?;
+    }
 
     // 4. Patch.
     let counter = Counter::default();

@@ -4,6 +4,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod config;
+mod dx;
 mod game;
 mod lan;
 mod scan;
@@ -256,6 +257,12 @@ impl App {
                 }
                 let sid = web::login(&target, &user, &pass)?;
                 config::set_password(&host, &user, remember.then_some(pass.as_str()));
+                let say = |t: &str| {
+                    let _ = tx.send(Msg::Status(t.to_string()));
+                    ctx.request_repaint();
+                };
+                dx::ensure(&dir, &say)?;
+                say("Starting the game…");
                 game::launch(&dir, &target, &sid)
             })();
             let _ = tx.send(Msg::Started(r.map_err(|e| format!("{e:#}"))));
