@@ -1529,8 +1529,34 @@ extern void xiv_on_hitch(uint64_t from_ns, uint64_t to_ns) __attribute__((weak))
 uint32_t d3d9_drawer_tid;
 pthread_t d3d9_drawer_thread;
 
+/* XIVLEGACY_WAITPROF=1: every 2 s, where the drawing thread (the one presenting) spent its time,
+ * per import (Sleep, the waits, PeekMessage, Present itself...), on any host. */
+static void waitprof_none(uint64_t ns) { (void)ns; }
+static void waitprof_frame(void)
+{
+    static int on = -1;
+    static uint64_t last, frames;
+    if (on < 0)
+        on = getenv("XIVLEGACY_WAITPROF") != NULL;
+    if (!on)
+        return;
+    thunk_prof_thread = plat_thread_id();
+    thunk_timer = waitprof_none;
+    uint64_t now = rt_monotonic_ns();
+    frames++;
+    if (!last)
+        last = now;
+    else if (now - last >= 2000000000ull)
+    {
+        rt_log("[waitprof] %llu frames in %.1f s\n", (unsigned long long)frames, (double)(now - last) * 1e-9);
+        thunk_prof_report();
+        last = now, frames = 0;
+    }
+}
+
 static void present(void)
 {
+    waitprof_frame();
     if (!d3d9_drawer_tid)
         d3d9_drawer_thread = pthread_self();
     d3d9_drawer_tid = plat_thread_id();

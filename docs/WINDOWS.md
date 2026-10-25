@@ -33,6 +33,7 @@ all the game gives up and quits after about 30 frames.
 | Variable | Does |
 | --- | --- |
 | `XIVLEGACY_FRAMESTATS=1` | frame time statistics in the log |
+| `XIVLEGACY_WAITPROF=1` | every 2 s: frames, and where the drawing thread spent its time per import (`[waitprof]`, `API time`). On a Mac at the title screen: 120 frames, Sleep ~650 ms, Present ~60 ms, timeGetTime ~800k calls |
 | `XIVLEGACY_WGPU_BACKEND=dx12` / `vulkan` | which API wgpu drives (default: wgpu's pick, Vulkan on most PCs) |
 | `XIVLEGACY_WGPU_PRESENT=fifo` / `mailbox` / `immediate` | present mode (vsync or not) |
 | `XIVLEGACY_WGPU_STATS=1` | per-frame wgpu costs (passes, uploads) |
