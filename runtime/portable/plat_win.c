@@ -11,8 +11,7 @@
 const char plat_path_sep = '\\';
 
 /* Windows 11 power throttling (EcoQoS): a process it considers background gets its timers
- * coalesced and its timer resolution requests ignored, so a 2 ms Sleep could take 76 ms. The host
- * and every thread it starts opt out. */
+ * coalesced and its timer resolution requests ignored. The host and every thread it starts opt out. */
 #ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
 #define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
 #endif
@@ -103,22 +102,44 @@ int plat_thread_start(void (*fn)(void*), void* arg)
  * does, on the desktop; the UWP build has no SDL). The game's frame limiter sleeps in short steps, so
  * at 15.6 ms a 33 ms frame became 47 (21 fps). A high-resolution waitable timer (Windows 10 1803+,
  * allowed in UWP apps) wakes on time without touching the system's resolution. One per thread. */
+static __declspec(thread) HANDLE t_sleep_timer;
+static DWORD g_main_tid;
+
+/* What sleeping costs on the calling thread, and why it might differ from another thread's. */
+void plat_sleep_diag(char* out, size_t n)
+{
+    if (!g_main_tid)
+        g_main_tid = GetCurrentThreadId();
+    uint64_t t0 = rt_monotonic_ns();
+    for (int i = 0; i < 5; ++i)
+        plat_sleep_ms(2);
+    uint64_t t1 = rt_monotonic_ns();
+    for (int i = 0; i < 5; ++i)
+        Sleep(2);
+    uint64_t t2 = rt_monotonic_ns();
+    DWORD_PTR proc_mask = 0, sys_mask = 0;
+    GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask);
+    snprintf(out, n, "thread %lu%s, priority %d, timer %s, 5x plat_sleep_ms(2) %.1f ms, 5x Sleep(2) %.1f ms, affinity %#llx",
+        (unsigned long)GetCurrentThreadId(), GetCurrentThreadId() == g_main_tid ? " (main)" : "", GetThreadPriority(GetCurrentThread()),
+        t_sleep_timer == INVALID_HANDLE_VALUE ? "none (Sleep)" : t_sleep_timer ? "high-resolution" : "not made yet",
+        (double)(t1 - t0) * 1e-6, (double)(t2 - t1) * 1e-6, (unsigned long long)proc_mask);
+}
+
 void plat_sleep_ms(uint32_t ms)
 {
-    static __declspec(thread) HANDLE timer;
     if (ms && ms != INFINITE)
     {
-        if (!timer)
+        if (!t_sleep_timer)
         {
-            timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-            if (!timer)
-                timer = INVALID_HANDLE_VALUE; /* older Windows: Sleep */
+            t_sleep_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            if (!t_sleep_timer)
+                t_sleep_timer = INVALID_HANDLE_VALUE; /* older Windows: Sleep */
         }
-        if (timer != INVALID_HANDLE_VALUE)
+        if (t_sleep_timer != INVALID_HANDLE_VALUE)
         {
             LARGE_INTEGER due;
             due.QuadPart = -(LONGLONG)ms * 10000; /* relative, in 100 ns units */
-            if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) && WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0)
+            if (SetWaitableTimer(t_sleep_timer, &due, 0, NULL, NULL, FALSE) && WaitForSingleObject(t_sleep_timer, INFINITE) == WAIT_OBJECT_0)
                 return;
         }
     }

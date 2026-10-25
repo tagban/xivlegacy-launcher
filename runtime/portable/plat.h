@@ -33,6 +33,8 @@ void plat_signal_threads(int sig);
 #if defined(_WIN32)
 /* Windows: opts the process out of power throttling (EcoQoS), which coalesces its timers. */
 void plat_no_throttling(void);
+/* A line about sleeping on the calling thread (its cost, priority, timer), for diagnostics. */
+void plat_sleep_diag(char* out, size_t n);
 #endif
 void plat_sleep_ms(uint32_t ms);
 void plat_yield(void);

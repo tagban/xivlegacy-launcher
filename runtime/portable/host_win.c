@@ -32,6 +32,11 @@ int main(int argc, char** argv)
      * and make the audio engine late. */
     timeBeginPeriod(1);
     plat_no_throttling();
+    {
+        char d[256];
+        plat_sleep_diag(d, sizeof d);
+        printf("[host] sleep check: %s\n", d);
+    }
     /* a check that lands in the log: what a 2 ms sleep costs here */
     {
         uint64_t t0 = rt_monotonic_ns();

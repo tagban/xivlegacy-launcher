@@ -623,6 +623,15 @@ static void sh_Sleep(Guest* g)
     /* XIVLEGACY_WAITPROF: on the drawing thread, the time asked for, slept, and spent getting the
      * guest lock back, summed over 2 s (logged with the [waitprof] line) */
     int prof = thunk_timer && plat_thread_id() == thunk_prof_thread;
+#if defined(_WIN32)
+    static int diagnosed;
+    if (prof && !diagnosed++)
+    {
+        char d[256];
+        plat_sleep_diag(d, sizeof d);
+        rt_log("[waitprof] the drawing thread's sleep check: %s\n", d);
+    }
+#endif
     uint64_t t0 = prof ? rt_monotonic_ns() : 0;
     gt_unlock();
     if (ms)
