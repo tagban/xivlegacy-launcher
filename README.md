@@ -29,6 +29,12 @@ the preserved copies from archive.org.
 4. **After that: pick a server and Join.** The list starts with
    `xiv.ffxi.cc`; **Edit…** adds others. **Create Account** makes an account
    on the selected server with the name and password you typed.
+5. **Starting it next time:** once the game is installed, XIVLegacy puts
+   shortcuts on your Desktop and in the Start menu with the FINAL FANTASY XIV
+   icon (taken from your own copy of the game); pin one to the taskbar if you
+   like. You can move XIVLegacy.exe somewhere permanent first, such as
+   `Documents`, since the shortcuts point at wherever it was when they were
+   made.
 
 XIVLegacy checks for a newer version when it starts and offers **Update
 now**, which replaces itself and restarts. **Repair…** (bottom right) reinstalls
@@ -52,13 +58,25 @@ Apple Silicon Macs (M1 or later), macOS 13 Ventura or newer.
    [releases page](https://github.com/tagban/xivlegacy-launcher/releases),
    open it, and drag **XIVLegacy** into Applications. It is signed and
    notarized by Apple, so it opens without warnings.
-2. The rest is the same as on Windows: the first run builds the game files
-   (in `~/Library/Application Support/XIVLegacy`), the first Join makes the
-   game (with Apple's compiler if the Command Line Tools are installed,
-   otherwise zig), then pick a server and Join.
+2. **First run: game files.** As on Windows: XIVLegacy finds the disc image
+   and patches in your Downloads, Desktop and Documents folders or downloads
+   them (about 11 GB), and builds the game in
+   `~/Library/Application Support/XIVLegacy` (about 12 GB). Already have a
+   1.23b folder? Choose **I already have the game…**
+3. **First Join: making the game.** A few minutes, once. It uses Apple's
+   compiler if the Command Line Tools are installed (`xcode-select
+   --install`), otherwise it downloads zig (about 90 MB).
+4. **After that: open XIVLegacy from Applications or Launchpad, pick a
+   server and Join.** Once the game is installed, XIVLegacy and the game show
+   the FINAL FANTASY XIV icon in the Dock.
 
 When a newer version is out, XIVLegacy says so and links to the releases
 page. Passwords you ask it to remember are kept in the macOS keychain.
+
+## Linux
+
+Not yet. The Windows client's graphics (wgpu on Vulkan) are the groundwork
+for a native Linux build.
 
 ## The installer on its own
 

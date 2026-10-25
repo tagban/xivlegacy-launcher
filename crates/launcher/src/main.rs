@@ -7,6 +7,7 @@ mod config;
 mod dx;
 mod game;
 mod icon;
+mod shortcut;
 mod lan;
 mod make;
 mod scan;
@@ -197,6 +198,9 @@ impl App {
         };
         if !ready {
             app.start_scan(&cc.egui_ctx);
+        } else if let Some(dir) = app.cfg.game_dir.clone() {
+            app.make_shortcuts_once(&dir);
+            app.cfg.save();
         }
         update::clean_up();
         let (tx, ctx) = (app.tx.clone(), cc.egui_ctx.clone());
@@ -212,6 +216,17 @@ impl App {
         if let Some(icon) = game_icon(game_dir) {
             self.ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(icon))));
         }
+    }
+
+    /// The Desktop and Start menu shortcuts with the game's icon (Windows), once: on the first
+    /// install, or the first start of a version that makes them. The caller saves the config.
+    fn make_shortcuts_once(&mut self, game_dir: &Path) {
+        if self.cfg.shortcuts || !cfg!(windows) {
+            return;
+        }
+        self.cfg.shortcuts = true;
+        let dir = game_dir.to_path_buf();
+        std::thread::spawn(move || shortcut::make(&dir));
     }
 
     fn say(&mut self, text: impl Into<String>, error: bool) {
@@ -381,6 +396,7 @@ impl App {
             }
             Msg::Installed(Ok(dir)) => {
                 self.set_icon(&dir);
+                self.make_shortcuts_once(&dir);
                 self.cfg.game_dir = Some(dir);
                 self.cfg.save();
                 self.screen = Screen::Launcher;
@@ -393,6 +409,7 @@ impl App {
             Msg::Checked(Ok((dir, note))) => {
                 self.busy = false;
                 self.set_icon(&dir);
+                self.make_shortcuts_once(&dir);
                 self.cfg.game_dir = Some(dir);
                 self.cfg.save();
                 self.screen = Screen::Launcher;

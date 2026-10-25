@@ -27,6 +27,9 @@ pub struct Config {
     pub server: usize,
     pub username: String,
     pub remember: bool,
+    /// The Desktop and Start menu shortcuts were made (Windows; see shortcut.rs). Once, so a
+    /// player who deletes them isn't given them back.
+    pub shortcuts: bool,
 }
 
 impl Default for Config {
@@ -37,6 +40,7 @@ impl Default for Config {
             server: 0,
             username: String::new(),
             remember: true,
+            shortcuts: false,
         }
     }
 }
