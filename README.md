@@ -17,7 +17,8 @@ the preserved copies from archive.org.
 2. **First run: game files.** XIVLegacy looks for the disc image (`.iso`, or
    the `.7z` it is preserved in) and `ffxiv_patches.zip` in your Downloads,
    Desktop and Documents folders and on every drive, and downloads whatever it
-   doesn't find from archive.org (about 11 GB). It then builds a clean 1.23b
+   doesn't find from archive.org (about 11 GB), switching to a backup copy
+   if archive.org is down. It then builds a clean 1.23b
    install (about 12 GB) in `%LOCALAPPDATA%\XIVLegacy`. Already have a 1.23b
    folder? Choose **I already have the game…** instead.
 3. **After that: pick a server and Join.** The list starts with
