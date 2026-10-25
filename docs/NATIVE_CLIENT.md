@@ -20,6 +20,7 @@ rendering; performance is the work now.
 | `runtime/portable/d3d9.c` | Direct3D 9: objects, state, state blocks, resources; hands draws to `gfx9.h` |
 | `runtime/portable/gfx9_metal.m` | the Metal back end: pipelines, depth-stencil and sampler states, a per-frame ring for vertex/index/constant data, passes, present |
 | `runtime/portable/sm3.c`, `sm3_msl.c` | D3D9 shader bytecode parser and the SM2/SM3 to Metal Shading Language translator (per vertex/pixel shader pair) |
+| `runtime/portable/gfx9_wgpu.c`, `sm3_wgsl.c` | the wgpu back end (wgpu-native: Direct3D 12 on Windows, Vulkan on Linux, Metal on macOS) and the SM2/SM3 to WGSL translator; `XIVLEGACY_GFX=wgpu` |
 | `tests/boot.c` | the test host: mounts the install, builds the launch argument, runs the game |
 
 ## Building and running
@@ -32,6 +33,12 @@ target/release/xivlegacy-recomp recomp --meta meta/ffxivgame.2012.09.19.0001.met
 python3 tools/build.py boot
 build/boot "<1.23b install>" <56-character session id>
 ```
+
+The graphics back end is chosen at build time: `XIVLEGACY_GFX=wgpu python3 tools/build.py boot` (or
+`host`) builds on wgpu-native (`brew install wgpu-native`, or `WGPU_NATIVE=<prefix>`); macOS defaults to
+Metal, Windows and Linux always use wgpu. `tools/wgsl_check.c` translates a shader dump
+(`XIVLEGACY_DUMP_SHADERS`) to WGSL and has wgpu build every pair; `XIVLEGACY_WGSLDUMP=<dir>` saves each
+pair's WGSL from a running game.
 
 A session id comes from the server's web login (`POST /login` on :54993 answers with
 `ffxiv://login_success?sessionId=...`). The lobby host the game asks for (`lobby01.ffxiv.com`) is mapped
