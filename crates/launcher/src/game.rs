@@ -41,8 +41,11 @@ pub fn installed(dir: &Path) -> bool {
         && std::fs::read_to_string(dir.join("game.ver")).is_ok_and(|v| v.trim() == "2012.09.19.0001")
 }
 
+/// Whether this system's client is the host plus a game module made on this machine.
+pub const USES_MODULE: bool = cfg!(target_os = "macos");
+
 #[cfg(windows)]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, _module: Option<&Path>) -> Result<()> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null;
@@ -189,7 +192,7 @@ pub fn exit_meaning(code: u32) -> &'static str {
 /// it is never downloaded. It takes the game folder and the session id, builds
 /// the game's launch argument itself, and sends the lobby to XIVLEGACY_LOBBY.
 #[cfg(target_os = "macos")]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -197,12 +200,12 @@ pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
 
     crate::sqex::launch_arg(session_id, 0)?; // the same session id check as Windows
     let exe = std::env::current_exe()?;
-    let helper = exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|contents| contents.join("Helpers/xivlegacy-game"))
-        .filter(|p| p.is_file())
-        .context("this copy of XIVLegacy has no Mac game built into it (Contents/Helpers/xivlegacy-game)")?;
+    let helpers = exe.parent().and_then(Path::parent).map(|contents| contents.join("Helpers")).unwrap_or_default();
+    let helper = helpers.join("xivlegacy-host");
+    if !helper.is_file() {
+        bail!("this copy of XIVLegacy is missing its game host (Contents/Helpers/xivlegacy-host)");
+    }
+    let module = module.context("no game module")?;
     let support = crate::config::dir();
     let user = support.join("user");
     std::fs::create_dir_all(&user)?;
@@ -210,6 +213,8 @@ pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
     std::fs::create_dir_all(&logs)?;
     let log = std::fs::File::create(logs.join("game.log"))?;
     let mut child = Command::new(&helper)
+        .arg("--module")
+        .arg(module)
         .arg(game_dir)
         .arg(session_id)
         .current_dir(&support)
@@ -233,7 +238,7 @@ pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn launch(_game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
+pub fn launch(_game_dir: &Path, host: &str, session_id: &str, _module: Option<&Path>) -> Result<()> {
     host_slot(host)?;
     crate::sqex::launch_arg(session_id, 0)?;
     bail!("Starting the game isn't supported on this system yet.")

@@ -7,6 +7,7 @@ mod config;
 mod dx;
 mod game;
 mod lan;
+mod make;
 mod scan;
 mod sqex;
 mod update;
@@ -30,6 +31,34 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DIRECTX_URL: &str = "https://www.microsoft.com/en-us/download/details.aspx?id=8109";
 
 fn main() -> eframe::Result {
+    // XIVLegacy --make-game <game folder>: make the game module from a terminal, then exit.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--make-game") {
+        let Some(dir) = args.get(2) else {
+            eprintln!("usage: XIVLegacy --make-game <FINAL FANTASY XIV 1.23b folder>");
+            std::process::exit(2);
+        };
+        let start = Instant::now();
+        let last = std::sync::Mutex::new(String::new());
+        let r = make::ensure(Path::new(dir), &|step, done, total| {
+            let line = format!("{}: {}%", step.label(), if total > 0 { done * 100 / total } else { 0 });
+            let mut l = last.lock().unwrap();
+            if *l != line {
+                eprintln!("{line}");
+                *l = line;
+            }
+        });
+        match r {
+            Ok(p) => {
+                eprintln!("made {} in {:.0?}", p.display(), start.elapsed());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("couldn't make the game: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("XIVLegacy")
@@ -80,6 +109,8 @@ enum Msg {
     /// (host, whether it answers, its local address if it answers only there)
     Alive(String, bool, Option<String>),
     Status(String),
+    /// Making the game for this computer: (step, done, total)
+    Making(make::Step, usize, usize),
     Update(Option<update::Available>),
     Updated(Result<(), String>),
     /// Repair finished: (game files missing, files different), or why it couldn't run.
@@ -118,6 +149,7 @@ struct App {
     update: Option<update::Available>,
     updating: bool,
     broken: bool,
+    making: Option<(make::Step, usize, usize)>,
 }
 
 impl App {
@@ -156,6 +188,7 @@ impl App {
             update: None,
             updating: false,
             broken: false,
+            making: None,
             cfg,
         };
         if !ready {
@@ -281,9 +314,25 @@ impl App {
                     ctx.request_repaint();
                 };
                 dx::ensure(&dir, &say)?;
+                let module = if game::USES_MODULE {
+                    let last = std::sync::Mutex::new((make::Step::Compiler, usize::MAX));
+                    let prog = |step: make::Step, done: usize, total: usize| {
+                        // at most one update per percent
+                        let pct = if total > 0 { done * 100 / total } else { 0 };
+                        let mut l = last.lock().unwrap();
+                        if l.0 != step || l.1 != pct {
+                            *l = (step, pct);
+                            let _ = tx.send(Msg::Making(step, done, total));
+                            ctx.request_repaint();
+                        }
+                    };
+                    Some(make::ensure(&dir, &prog)?)
+                } else {
+                    None
+                };
                 say("Starting the game…");
                 config::log(&format!("joining {host} via {target}"));
-                game::launch(&dir, &target, &sid)
+                game::launch(&dir, &target, &sid, module.as_deref())
             })();
             let _ = tx.send(Msg::Started(r.map_err(|e| format!("{e:#}"))));
             ctx.request_repaint();
@@ -341,8 +390,13 @@ impl App {
                 self.busy = false;
                 self.say(e, true);
             }
+            Msg::Making(step, done, total) => {
+                self.making = Some((step, done, total));
+                self.status.clear();
+            }
             Msg::Started(r) => {
                 self.busy = false;
+                self.making = None;
                 match r {
                     Ok(()) => self.say("The game is running. Have fun!", false),
                     Err(e) => {
@@ -779,6 +833,13 @@ impl App {
                 ui.spinner();
             }
         });
+        if let Some((step, done, total)) = self.making {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(step.label()).strong());
+            let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+            ui.add(egui::ProgressBar::new(frac).show_percentage());
+            ui.weak("The first time only: XIVLegacy makes the game from your own copy of FFXIV, so nothing of the game is downloaded. This takes a few minutes.");
+        }
         if self.broken && !self.busy && ui.button("Reinstall the game files").clicked() {
             self.reinstall(ctx);
         }
