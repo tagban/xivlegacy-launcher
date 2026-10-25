@@ -147,10 +147,41 @@ void plat_yield(void)
 }
 
 /* --- waiting on an address ------------------------------------------------------------------------ */
+#if defined(__APPLE__)
+/* os_sync_wait_on_address is macOS 14.4+. Before it, the kernel's ulock calls (what libc++'s atomic
+ * wait uses there; private, stable since macOS 10.12) do the same. */
+extern int __ulock_wait(uint32_t operation, void* addr, uint64_t value, uint32_t timeout_us);
+extern int __ulock_wake(uint32_t operation, void* addr, uint64_t wake_value);
+#define UL_COMPARE_AND_WAIT 1
+#define ULF_WAKE_ALL 0x100
+#define ULF_NO_ERRNO 0x01000000
+
+/* ms == ~0u: no timeout */
+static void apple_wait(volatile uint32_t* addr, uint32_t expected, uint32_t ms)
+{
+    if (__builtin_available(macOS 14.4, *))
+    {
+        if (ms == ~0u)
+            os_sync_wait_on_address((void*)addr, expected, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+        else
+            os_sync_wait_on_address_with_timeout((void*)addr, expected, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE,
+                OS_CLOCK_MACH_ABSOLUTE_TIME, (uint64_t)ms * 1000000u);
+    }
+    else
+    {
+        /* timeout in microseconds, 0 = none */
+        uint32_t us = ms == ~0u ? 0 : ms >= 4294967u ? 4294967295u : ms ? ms * 1000u : 1u;
+        /* EFAULT: the word's page was never written (still the shared zero page); a caller retries */
+        if (__ulock_wait(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, (void*)addr, expected, us) == -EFAULT)
+            sched_yield();
+    }
+}
+#endif
+
 void plat_wait32(volatile uint32_t* addr, uint32_t expected)
 {
 #if defined(__APPLE__)
-    os_sync_wait_on_address((void*)addr, expected, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+    apple_wait(addr, expected, ~0u);
 #else
     syscall(SYS_futex, addr, FUTEX_WAIT_PRIVATE, expected, NULL, NULL, 0);
 #endif
@@ -164,8 +195,7 @@ void plat_wait32_ms(volatile uint32_t* addr, uint32_t expected, uint32_t ms)
         return;
     }
 #if defined(__APPLE__)
-    os_sync_wait_on_address_with_timeout((void*)addr, expected, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE, OS_CLOCK_MACH_ABSOLUTE_TIME,
-        (uint64_t)ms * 1000000u);
+    apple_wait(addr, expected, ms);
 #else
     struct timespec t = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
     syscall(SYS_futex, addr, FUTEX_WAIT_PRIVATE, expected, &t, NULL, 0);
@@ -175,7 +205,10 @@ void plat_wait32_ms(volatile uint32_t* addr, uint32_t expected, uint32_t ms)
 void plat_wake_all32(volatile uint32_t* addr)
 {
 #if defined(__APPLE__)
-    os_sync_wake_by_address_all((void*)addr, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+    if (__builtin_available(macOS 14.4, *))
+        os_sync_wake_by_address_all((void*)addr, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+    else
+        __ulock_wake(UL_COMPARE_AND_WAIT | ULF_WAKE_ALL | ULF_NO_ERRNO, (void*)addr, 0);
 #else
     syscall(SYS_futex, addr, FUTEX_WAKE_PRIVATE, 0x7FFFFFFF, NULL, NULL, 0);
 #endif

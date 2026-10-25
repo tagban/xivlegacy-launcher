@@ -35,10 +35,20 @@ RUNTIME = ['runtime/runtime.c', 'runtime/portable/plat_posix.c', 'runtime/portab
            'runtime/portable/input.c', 'runtime/portable/xiv_k32.c', 'runtime/portable/sqex_args.c', 'runtime/portable/xiv_misc.c', 'runtime/portable/dinput.c', 'runtime/portable/ws2.c', 'runtime/portable/d3d9.c', 'runtime/portable/d3dx9.c', 'runtime/portable/xiv_fiber.c', 'runtime/portable/xiv_net.c', 'runtime/portable/xaudio2.c', 'runtime/portable/xiv_boot.c', 'runtime/portable/xiv_icon.c']
 BOOT_ONLY = []
 SDL = '/opt/homebrew'  # SDL3 from Homebrew
-CFLAGS += ['-I', SDL + '/include']
-LIBS = ['-L' + SDL + '/lib', '-lSDL3', '-Wl,-rpath,' + SDL + '/lib', '-lm', '-lpthread']
+# For a release, SDL's own macOS framework (SDL3-<v>.dmg: SDL3.xcframework/macos-arm64_x86_64, the folder
+# holding SDL3.framework) instead: Homebrew's is built for the Mac it was installed on, not older macOS.
+SDL_FRAMEWORK = os.environ.get('XIVLEGACY_SDL3_FRAMEWORK') if sys.platform == 'darwin' else None
+if SDL_FRAMEWORK:
+    CFLAGS += ['-F', SDL_FRAMEWORK]
+    LIBS = ['-F', SDL_FRAMEWORK, '-framework', 'SDL3', '-Wl,-rpath,@executable_path/../Frameworks', '-lm', '-lpthread']
+else:
+    CFLAGS += ['-I', SDL + '/include']
+    LIBS = ['-L' + SDL + '/lib', '-lSDL3', '-Wl,-rpath,' + SDL + '/lib', '-lm', '-lpthread']
 if sys.platform == 'darwin':
     CFLAGS += ['-DRT_GUEST_FIXED_BASE=0x300000000ull']  # gwin.c reserves the guest window exactly there
+    MACOS_MIN = os.environ.get('XIVLEGACY_MACOS_MIN', '13.0')  # the oldest macOS the host runs on
+    CFLAGS += ['-mmacosx-version-min=' + MACOS_MIN]
+    LIBS += ['-mmacosx-version-min=' + MACOS_MIN]
 
 # the graphics back end (see the top): Metal by default on macOS, wgpu everywhere else
 GFX = os.environ.get('XIVLEGACY_GFX') or ('metal' if sys.platform == 'darwin' else 'wgpu')

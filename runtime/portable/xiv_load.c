@@ -9,6 +9,8 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <limits.h>
+#include <stdlib.h>
 #endif
 
 const XivGameModule* xiv_game;
@@ -21,7 +23,9 @@ int xiv_game_load(const char* path, char* err, unsigned errsize)
         return snprintf(err, errsize, "%s: cannot load it (error %lu)", path, (unsigned long)GetLastError()), 0;
     const XivGameModule* m = (const XivGameModule*)(void*)GetProcAddress(h, XIV_GAME_SYMBOL);
 #else
-    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    /* a hardened macOS program (the signed app) refuses relative library paths */
+    char abs[PATH_MAX];
+    void* h = dlopen(realpath(path, abs) ? abs : path, RTLD_NOW | RTLD_LOCAL);
     if (!h)
         return snprintf(err, errsize, "%s", dlerror()), 0;
     const XivGameModule* m = (const XivGameModule*)dlsym(h, XIV_GAME_SYMBOL);

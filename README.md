@@ -5,7 +5,7 @@ self-contained program for macOS and Windows that connects to the private
 server you choose, and lives alongside retail FFXIV without touching it.
 
 For private servers only, such as
-[Garlemald Server](https://github.com/tagban/Garlemald-Server). This project
+[XIVLegacy Server](https://github.com/tagban/xivlegacy-server). This project
 ships no Square Enix files: you supply the game, or let the installer fetch
 the preserved copies from archive.org.
 
@@ -44,10 +44,27 @@ game's memory when it starts; the game files on disk stay as installed.
 Passwords are kept only if you tick **Remember me**, in Windows Credential
 Manager.
 
+## Play on macOS
+
+Apple Silicon Macs (M1 or later), macOS 13 Ventura or newer.
+
+1. Download **XIVLegacy-macOS-arm64.zip** from the
+   [releases page](https://github.com/tagban/xivlegacy-launcher/releases),
+   open it, and drag **XIVLegacy** into Applications. It is signed and
+   notarized by Apple, so it opens without warnings.
+2. The rest is the same as on Windows: the first run builds the game files
+   (in `~/Library/Application Support/XIVLegacy`), the first Join makes the
+   game (with Apple's compiler if the Command Line Tools are installed,
+   otherwise zig), then pick a server and Join.
+
+When a newer version is out, XIVLegacy says so and links to the releases
+page. Passwords you ask it to remember are kept in the macOS keychain.
+
 ## The installer on its own
 
 `xivlegacy-install` is the same setup as a command-line tool (macOS, Windows,
-Linux):
+Linux), for building from source; the releases don't include it, because
+XIVLegacy does the same itself:
 
 ```bash
 cargo build --release
