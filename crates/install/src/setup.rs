@@ -101,24 +101,29 @@ pub fn run(plan: &Plan, report: Arc<dyn Report>) -> Result<()> {
     };
 
     // 1. Downloads, in parallel.
-    let downloads: Vec<&Source> = [
-        matches!(plan.disc, DiscSource::Download).then_some(&ISO_7Z),
-        matches!(plan.patches, PatchSource::Download).then_some(&PATCHES_ZIP),
+    let sources = if matches!(plan.disc, DiscSource::Download) || matches!(plan.patches, PatchSource::Download) {
+        crate::sources::Sources::load()
+    } else {
+        crate::sources::Sources::builtin()
+    };
+    let downloads: Vec<(&Source, &[String])> = [
+        matches!(plan.disc, DiscSource::Download).then_some((&ISO_7Z, sources.disc.as_slice())),
+        matches!(plan.patches, PatchSource::Download).then_some((&PATCHES_ZIP, sources.patches.as_slice())),
     ]
     .into_iter()
     .flatten()
     .collect();
     let mut fetched: Vec<PathBuf> = Vec::new();
     if !downloads.is_empty() {
-        let total: u64 = downloads.iter().map(|s| s.size).sum();
+        let total: u64 = downloads.iter().map(|(s, _)| s.size).sum();
         let counter = Counter::default();
-        let detail = Arc::new(Mutex::new(downloads.iter().map(|s| s.name).collect::<Vec<_>>().join(" + ")));
+        let detail = Arc::new(Mutex::new(downloads.iter().map(|(s, _)| s.name).collect::<Vec<_>>().join(" + ")));
         let _t = Ticker::start(report.clone(), Phase::Download, counter.clone(), total, detail);
         let results: Vec<Result<PathBuf>> = thread::scope(|s| {
-            let hs: Vec<_> = downloads.iter().map(|src| {
+            let hs: Vec<_> = downloads.iter().map(|&(src, urls)| {
                 let c = counter.clone();
                 let cache = plan.cache.clone();
-                s.spawn(move || download::fetch(src, &cache, &c))
+                s.spawn(move || download::fetch(src, urls, &cache, &c))
             }).collect();
             hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("download thread panicked")))).collect()
         });

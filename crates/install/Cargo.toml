@@ -19,6 +19,8 @@ cab = "0.6"
 flate2 = "1"
 md-5 = "0.10"
 sevenz-rust2 = { version = "0.24.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha1 = "0.10"
 ureq = "2"
 hex = "0.4"

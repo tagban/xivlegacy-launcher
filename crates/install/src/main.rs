@@ -1,4 +1,4 @@
-use xivlegacy_install::{directx, disc, progress, setup, udf, verify};
+use xivlegacy_install::{directx, disc, progress, setup, sources, udf, verify};
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,9 @@ usage:
       Same as setup with both given.
   xivlegacy-install check <existing game folder> [--full]
       Is this folder a complete 1.23b install? (--full hashes every file.)
+  xivlegacy-install sources
+      Which download links setup will use, and where they came from (sources.json
+      beside the program, else the repository's copy, else built in).
 debugging:
   xivlegacy-install iso-ls <iso> [dir] | iso-sha1 <iso> <path> | disc-extract <iso> <out> [skip] | dx-extract <iso> <out>";
 
@@ -148,6 +151,15 @@ fn main() -> Result<()> {
                 );
             } else {
                 bail!("{} is not a complete 1.23b install", folder);
+            }
+        }
+        Some("sources") => {
+            let s = sources::Sources::load();
+            println!("links from: {}", s.origin);
+            for (what, urls) in [("disc", &s.disc), ("patches", &s.patches)] {
+                for (i, u) in urls.iter().enumerate() {
+                    println!("  {what} {}: {u}", if i == 0 { "main" } else { "fallback" });
+                }
             }
         }
         Some("iso-ls") => {

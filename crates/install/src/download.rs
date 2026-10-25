@@ -15,8 +15,7 @@ use crate::progress::Counter;
 pub struct Source {
     pub name: &'static str,
     pub url: &'static str,
-    /// Other copies, tried in order when `url` keeps failing. The SHA-1 check
-    /// is the same whichever copy the bytes come from.
+    /// Built-in fallback copies (see sources.rs for the links actually used).
     pub mirrors: &'static [&'static str],
     pub size: u64,
     pub sha1: &'static str,
@@ -46,9 +45,10 @@ fn hash_existing(path: &Path, h: &mut Sha1, counter: &Counter) -> Result<u64> {
     }
 }
 
-/// Downloads `src` into `dir` (resuming a partial download), checks its size
-/// and SHA-1, and returns the path. A file verified earlier is reused.
-pub fn fetch(src: &Source, dir: &Path, counter: &Counter) -> Result<PathBuf> {
+/// Downloads `src` into `dir` from the first of `urls` that works (resuming a
+/// partial download, moving on to the next link when one keeps failing), checks
+/// its size and SHA-1, and returns the path. A file verified earlier is reused.
+pub fn fetch(src: &Source, urls: &[String], dir: &Path, counter: &Counter) -> Result<PathBuf> {
     fs::create_dir_all(dir)?;
     let path = dir.join(src.name);
     let marker = verified_marker(&path);
@@ -70,10 +70,12 @@ pub fn fetch(src: &Source, dir: &Path, counter: &Counter) -> Result<PathBuf> {
         .timeout_connect(Duration::from_secs(30))
         .timeout_read(Duration::from_secs(60))
         .build();
-    let urls: Vec<&str> = std::iter::once(src.url).chain(src.mirrors.iter().copied()).collect();
+    if urls.is_empty() {
+        bail!("no download link for {}", src.name);
+    }
     let (mut which, mut attempt, mut in_a_row) = (0usize, 0u32, 0u32);
     while have < src.size {
-        match fetch_range(&agent, urls[which], &part, have, &mut hasher, counter) {
+        match fetch_range(&agent, &urls[which], &part, have, &mut hasher, counter) {
             Ok(n) => {
                 have += n;
                 attempt = 0;
@@ -173,13 +175,14 @@ mod tests {
         let good = serve(BODY, "application/octet-stream");
         let src = Source {
             name: "test.bin",
-            url: "http://127.0.0.1:1/unreachable",
-            mirrors: Box::leak(vec![&*Box::leak(page.into_boxed_str()), &*Box::leak(good.into_boxed_str())].into_boxed_slice()),
+            url: "",
+            mirrors: &[],
             size: BODY.len() as u64,
             sha1: Box::leak(hex::encode(Sha1::digest(BODY)).into_boxed_str()),
         };
+        let urls = ["http://127.0.0.1:1/unreachable".to_string(), page, good];
         let dir = std::env::temp_dir().join(format!("xivlegacy-dl-test-{}", std::process::id()));
-        let path = fetch(&src, &dir, &Counter::default()).unwrap();
+        let path = fetch(&src, &urls, &dir, &Counter::default()).unwrap();
         assert_eq!(fs::read(&path).unwrap(), BODY);
         let _ = fs::remove_dir_all(&dir);
     }

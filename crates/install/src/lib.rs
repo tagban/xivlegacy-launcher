@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod patches;
 pub mod progress;
 pub mod setup;
+pub mod sources;
 pub mod udf;
 pub mod verify;
 pub mod zipatch;

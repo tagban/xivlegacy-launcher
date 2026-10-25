@@ -66,6 +66,20 @@ cargo build --release
   SHA-1-checked. `check` compares a folder with a built-in list of all 188,697
   files of a correct install (paths, sizes and hashes; no game data).
 
+## Download links (`sources.json`)
+
+Where setup downloads the disc and patches from is kept in
+[`sources.json`](sources.json): a list of links for each, tried in order (the
+first is the main copy, the rest are fallbacks used when it keeps failing).
+Setup reads `sources.json` next to the program if there is one, else this
+repository's copy, else the links built into the program, so changing the
+repository's file changes the links for everyone without a new release.
+`xivlegacy-install sources` shows which links would be used.
+
+Only links come from the file: the expected size and SHA-1 of each download
+are built into the program, so a download from any link must still be the
+exact archive.org file.
+
 ## Native macOS client
 
 `crates/recomp` and `runtime/` are a native macOS client (no Wine): the game's
