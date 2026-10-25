@@ -54,11 +54,11 @@ directly would need clang or `zig cc` as CC, the SDL3 MinGW development package
 
 ## Open questions (October 2026)
 
-- **Frame rate** was 11.4 fps on an RTX 4060 (wgpu on Vulkan) with 0.1.7 under every setting:
-  about 11 ms of work and 77 ms of waiting per frame, the GPU idle at its lowest clock. 0.1.9
-  raises the timer resolution to 1 ms, the likely cause. Measure with
-  `XIVLEGACY_FRAMESTATS=1`, then compare `XIVLEGACY_WGPU_BACKEND=dx12`, `XIVLEGACY_WGPU_PRESENT=immediate`
-  and `XIVLEGACY_NOAUDIO=1`. On the Mac the wgpu back end spends its time replaying ~124 render
-  passes per frame and copying ~14 MB/frame into its ring.
+- **Frame rate** was 11.4 fps on an RTX 4060 through 0.1.13: the game's drawing thread slept ~76 ms
+  per 2 ms Sleep. The cause was the sleep timer in `plat_win.c`, meant to be one per thread but
+  shared by all of them (MinGW compilers ignore `__declspec(thread)`; the code uses `RT_TLS` now, and
+  the Windows build makes unknown attributes an error). A waitable timer wakes one waiter, so each
+  thread woke on whichever thread's time came up first. Fixed in 0.1.14; measure again with
+  `XIVLEGACY_WAITPROF=1`.
 - **Audio** ran dry 1 pass in 8 on that PC with 0.1.7 (fine on the Mac); 0.1.8 asks for 10 ms
   device pulls and grows its queue when the device runs dry.

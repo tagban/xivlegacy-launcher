@@ -186,8 +186,9 @@ def win_compile(sources, objdir, flags):
 def host(args):
     """build/xivlegacy-host: the runtime without the translation; it loads the game with --module."""
     if args.windows:
+        # unknown attributes are errors: MinGW compilers ignore an unknown __declspec, thread among them
         objs = win_compile(WIN_RUNTIME + WIN_GFX + ['runtime/portable/xiv_load.c'], 'build/win/obj',
-                           WIN_CFLAGS + ['-O1', '-DXIVLEGACY_SPLIT', '-w', '-I', WIN_WGPU + '/include',
+                           WIN_CFLAGS + ['-O1', '-DXIVLEGACY_SPLIT', '-Wno-everything', '-Werror=unknown-attributes', '-I', WIN_WGPU + '/include',
                                          '-I', WIN_WGPU + '/include/webgpu'])
         run(WIN_CC + ['-o', 'build/win/xivlegacy-host.exe'] + objs + WIN_LIBS)
         import shutil

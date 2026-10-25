@@ -101,8 +101,11 @@ int plat_thread_start(void (*fn)(void*), void* arg)
 /* Sleep rounds up to the system timer's tick: 15.6 ms unless something raised the resolution (SDL
  * does, on the desktop; the UWP build has no SDL). The game's frame limiter sleeps in short steps, so
  * at 15.6 ms a 33 ms frame became 47 (21 fps). A high-resolution waitable timer (Windows 10 1803+,
- * allowed in UWP apps) wakes on time without touching the system's resolution. One per thread. */
-static __declspec(thread) HANDLE t_sleep_timer;
+ * allowed in UWP apps) wakes on time without touching the system's resolution. One per thread: a
+ * waitable timer wakes one waiter, so a shared one (MinGW compilers ignore __declspec(thread), which
+ * made this one shared until 0.1.14) woke whichever thread was waiting, not the one whose time was
+ * up. The game's drawing thread slept ~76 ms for 2 (11 fps) and could wait forever. */
+static RT_TLS HANDLE t_sleep_timer;
 static DWORD g_main_tid;
 
 /* What sleeping costs on the calling thread, and why it might differ from another thread's. */
