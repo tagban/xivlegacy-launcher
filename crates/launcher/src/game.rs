@@ -166,6 +166,7 @@ pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
 #[cfg(windows)]
 const EARLY_EXIT_MS: u32 = 30_000;
 
+
 /// What a Windows exit code from a game that closed at start-up means.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn exit_meaning(code: u32) -> &'static str {
@@ -183,11 +184,59 @@ pub fn exit_meaning(code: u32) -> &'static str {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: the native client (no Wine), `Contents/Helpers/xivlegacy-game` in the
+/// app bundle. It is built on this Mac from the player's own ffxivgame.exe, so
+/// it is never downloaded. It takes the game folder and the session id, builds
+/// the game's launch argument itself, and sends the lobby to XIVLEGACY_LOBBY.
+#[cfg(target_os = "macos")]
+pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use anyhow::Context;
+
+    crate::sqex::launch_arg(session_id, 0)?; // the same session id check as Windows
+    let exe = std::env::current_exe()?;
+    let helper = exe
+        .parent()
+        .and_then(Path::parent)
+        .map(|contents| contents.join("Helpers/xivlegacy-game"))
+        .filter(|p| p.is_file())
+        .context("this copy of XIVLegacy has no Mac game built into it (Contents/Helpers/xivlegacy-game)")?;
+    let support = crate::config::dir();
+    let user = support.join("user");
+    std::fs::create_dir_all(&user)?;
+    let logs = dirs::home_dir().unwrap_or_default().join("Library/Logs/XIVLegacy");
+    std::fs::create_dir_all(&logs)?;
+    let log = std::fs::File::create(logs.join("game.log"))?;
+    let mut child = Command::new(&helper)
+        .arg(game_dir)
+        .arg(session_id)
+        .current_dir(&support)
+        .env("XIVLEGACY_USER", &user)
+        .env("XIVLEGACY_LOBBY", host)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .with_context(|| format!("starting {}", helper.display()))?;
+    crate::config::log(&format!("game started (pid {}) for {host}", child.id()));
+    // A game that closes within its first half minute failed to start: say how.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(30) {
+        if let Some(status) = child.try_wait()? {
+            crate::config::log(&format!("game closed early: {status}"));
+            bail!("The game closed right after starting ({status}). Its log: ~/Library/Logs/XIVLegacy/game.log");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn launch(_game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
     host_slot(host)?;
     crate::sqex::launch_arg(session_id, 0)?;
-    bail!("This build starts the game on Windows only. On a Mac, use the XIVLegacy app.")
+    bail!("Starting the game isn't supported on this system yet.")
 }
 
 #[cfg(test)]

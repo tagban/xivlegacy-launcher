@@ -89,9 +89,19 @@ pub fn log(line: &str) {
     }
 }
 
-/// The saved password for (server, user), if any.
+/// The saved password for (server, user), if any. On macOS, the earlier Mac
+/// launcher's keychain entry (service "XIVLegacy", one password per user) is
+/// taken over the first time.
 pub fn password(host: &str, user: &str) -> Option<String> {
-    keyring::Entry::new(&format!("XIVLegacy {host}"), user).ok()?.get_password().ok()
+    if let Some(p) = keyring::Entry::new(&format!("XIVLegacy {host}"), user).ok()?.get_password().ok() {
+        return Some(p);
+    }
+    if cfg!(target_os = "macos") {
+        let old = keyring::Entry::new("XIVLegacy", user).ok()?.get_password().ok()?;
+        set_password(host, user, Some(&old));
+        return Some(old);
+    }
+    None
 }
 
 pub fn set_password(host: &str, user: &str, password: Option<&str>) {
