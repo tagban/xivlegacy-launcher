@@ -66,6 +66,19 @@ impl Step {
     }
 }
 
+/// A process with no console window: on Windows a windowed program that starts a console program
+/// otherwise gets a new console for each one (one per compiler running at once).
+fn quiet(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
 fn games_dir() -> PathBuf {
     crate::config::dir().join("game")
 }
@@ -151,7 +164,7 @@ pub fn ensure(game_dir: &Path, progress: &(dyn Fn(Step, usize, usize) + Sync)) -
                     }
                     let src = &sources[i];
                     let o = obj.join(format!("{}.o", src.file_stem().unwrap().to_string_lossy()));
-                    let r = Command::new(&cc[0])
+                    let r = quiet(&cc[0])
                         .args(&cc[1..])
                         .arg("-c")
                         .args(cflags())
@@ -191,7 +204,7 @@ pub fn ensure(game_dir: &Path, progress: &(dyn Fn(Step, usize, usize) + Sync)) -
     let rsp = work.join("objects.rsp");
     std::fs::write(&rsp, objs.iter().map(|o| format!("\"{o}\"")).collect::<Vec<_>>().join("\n"))?;
     let tmp = out.with_extension(format!("{EXT}.part"));
-    let mut link = Command::new(&cc[0]);
+    let mut link = quiet(&cc[0]);
     link.args(&cc[1..]).arg(format!("@{}", rsp.display())).arg("-o").arg(&tmp);
     if cfg!(target_os = "macos") {
         // C library symbols resolve from the host process when the module loads (zig's macOS
@@ -222,10 +235,10 @@ fn compiler(progress: &(dyn Fn(Step, usize, usize) + Sync)) -> Result<Vec<String
         let zig = zig(progress)?;
         return Ok(vec![zig.to_string_lossy().into_owned(), "cc".into()]);
     }
-    let works = |cmd: &[&str]| Command::new(cmd[0]).args(&cmd[1..]).arg("--version").output().is_ok_and(|o| o.status.success());
+    let works = |cmd: &[&str]| quiet(cmd[0]).args(&cmd[1..]).arg("--version").output().is_ok_and(|o| o.status.success());
     if cfg!(target_os = "macos") {
         // Only ask xcrun when the command line tools are installed; otherwise macOS offers to install them.
-        if Command::new("xcode-select").arg("-p").output().is_ok_and(|o| o.status.success()) && works(&["xcrun", "clang"]) {
+        if quiet("xcode-select").arg("-p").output().is_ok_and(|o| o.status.success()) && works(&["xcrun", "clang"]) {
             return Ok(vec!["xcrun".into(), "clang".into()]);
         }
     } else if !cfg!(windows) && works(&["clang"]) {
@@ -292,7 +305,7 @@ fn zig(progress: &(dyn Fn(Step, usize, usize) + Sync)) -> Result<PathBuf> {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive)?)?;
         zip.extract(&unpack)?;
     } else {
-        let st = Command::new("tar").arg("-xJf").arg(&archive).arg("-C").arg(&unpack).status()?;
+        let st = quiet("tar").arg("-xJf").arg(&archive).arg("-C").arg(&unpack).status()?;
         if !st.success() {
             bail!("unpacking zig failed");
         }
