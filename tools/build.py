@@ -27,7 +27,7 @@ RUNTIME = ['runtime/runtime.c', 'runtime/portable/plat_posix.c', 'runtime/portab
            'runtime/portable/thunk.c', 'runtime/portable/pe.c', 'runtime/portable/k32.c', 'runtime/portable/vfs.c',
            'runtime/portable/kobj.c', 'runtime/portable/k32_io.c', 'runtime/portable/reg.c', 'runtime/portable/ole.c',
            'runtime/portable/k32_misc.c', 'runtime/portable/user32.c',
-           'runtime/portable/input.c', 'runtime/portable/xiv_k32.c', 'runtime/portable/sqex_args.c', 'runtime/portable/xiv_misc.c', 'runtime/portable/dinput.c', 'runtime/portable/ws2.c', 'runtime/portable/d3d9.c', 'runtime/portable/d3dx9.c', 'runtime/portable/xiv_fiber.c', 'runtime/portable/xiv_net.c', 'runtime/portable/xaudio2.c']
+           'runtime/portable/input.c', 'runtime/portable/xiv_k32.c', 'runtime/portable/sqex_args.c', 'runtime/portable/xiv_misc.c', 'runtime/portable/dinput.c', 'runtime/portable/ws2.c', 'runtime/portable/d3d9.c', 'runtime/portable/d3dx9.c', 'runtime/portable/xiv_fiber.c', 'runtime/portable/xiv_net.c', 'runtime/portable/xaudio2.c', 'runtime/portable/xiv_boot.c']
 BOOT_ONLY = []
 SDL = '/opt/homebrew'  # SDL3 from Homebrew
 CFLAGS += ['-I', SDL + '/include']
@@ -118,9 +118,47 @@ def boot(args):
 
 MODULE_EXT = '.dylib' if sys.platform == 'darwin' else '.dll' if sys.platform == 'win32' else '.so'
 
+# Windows x64, cross-built with zig (`--windows`): the same runtime with plat_win.c and the Windows
+# start (host_win.c). SDL3 is the official MinGW development package (SDL3-devel-<v>-mingw.tar.gz)
+# unpacked at XIVLEGACY_SDL3_MINGW (its x86_64-w64-mingw32 folder).
+WIN_CC = ['zig', 'cc', '-target', 'x86_64-windows-gnu']
+WIN_SDL = os.environ.get('XIVLEGACY_SDL3_MINGW', '/Volumes/AppStorage/ffxiv-scratch/deps/sdl3-mingw/SDL3-3.4.16/x86_64-w64-mingw32')
+WIN_CFLAGS = ['-std=c11', '-g', '-DRT_GUEST_WINDOW', '-fno-strict-aliasing', '-I', 'runtime', '-I', 'runtime/portable',
+              '-I', WIN_SDL + '/include']
+WIN_RUNTIME = [s for s in RUNTIME if s != 'runtime/portable/plat_posix.c' and not s.endswith(('.m', 'sm3_msl.c'))] + [
+    'runtime/portable/plat_win.c', 'runtime/portable/host_win.c']
+WIN_GFX = ['runtime/portable/gfx9_null.c']  # until the wgpu back end lands
+WIN_LIBS = [WIN_SDL + '/lib/libSDL3.dll.a', '-lws2_32', '-lole32', '-loleaut32', '-luser32', '-lgdi32', '-lwinmm',
+            '-ladvapi32', '-lshell32', '-lsynchronization']
+
+
+def win_compile(sources, objdir, flags):
+    """compile_stale for the Windows cross build (its own objects and flags)."""
+    os.makedirs(os.path.join(ROOT, objdir), exist_ok=True)
+    objs, jobs = [], []
+    for src in sources:
+        obj = os.path.join(objdir, os.path.splitext(os.path.basename(src))[0] + '.o')
+        objs.append(obj)
+        a, b = os.path.join(ROOT, src), os.path.join(ROOT, obj)
+        if not os.path.exists(b) or os.path.getmtime(b) < max(os.path.getmtime(a), newest_header(('runtime', 'runtime/portable'))):
+            jobs.append(WIN_CC + ['-c'] + flags + [src, '-o', obj])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        bad = [j[-3] for j, r in zip(jobs, ex.map(lambda j: subprocess.call(j, cwd=ROOT), jobs)) if r]
+    if bad:
+        raise SystemExit('failed: ' + ', '.join(bad))
+    return objs
+
 
 def host(args):
     """build/xivlegacy-host: the runtime without the translation; it loads the game with --module."""
+    if args.windows:
+        objs = win_compile(WIN_RUNTIME + WIN_GFX + ['runtime/portable/xiv_load.c'], 'build/win/obj',
+                           WIN_CFLAGS + ['-O1', '-DXIVLEGACY_SPLIT', '-w'])
+        run(WIN_CC + ['-o', 'build/win/xivlegacy-host.exe'] + objs + WIN_LIBS)
+        import shutil
+        shutil.copy(os.path.join(WIN_SDL, 'bin', 'SDL3.dll'), os.path.join(ROOT, 'build', 'win', 'SDL3.dll'))
+        print('built build/win/xivlegacy-host.exe (with SDL3.dll beside it)')
+        return
     flags = ['-O1', '-Wall', '-DXIVLEGACY_SPLIT']
     flags_changed('build/obj/host', flags)
     objs = compile_stale(RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c'], 'build/obj/host', flags,
@@ -133,6 +171,15 @@ def host(args):
 def module(args):
     """build/xivlegacy-game.<ext>: the translation (generated/c) as a shared library (xiv_module.c)."""
     import shlex
+    if args.windows:
+        objs = win_compile(generated() + ['runtime/xiv_module.c'], 'build/win/mod',
+                           [f for f in WIN_CFLAGS if f != '-g'] + GEN_FLAGS + ['-w'])
+        out = args.out or os.path.join('build', 'win', 'xivlegacy-game.dll')
+        rsp = os.path.join(ROOT, 'build', 'win', 'mod.rsp')
+        open(rsp, 'w').write('\n'.join('"%s"' % o for o in objs))
+        run(WIN_CC + ['-shared', '-o', out, '@' + rsp])
+        print('built ' + out)
+        return
     cc = shlex.split(os.environ.get('CC', 'clang'))
     flags = GEN_FLAGS + ['-fPIC', '-fvisibility=hidden']
     flags_changed('build/mod', flags)
@@ -152,6 +199,7 @@ def main():
     ap.add_argument('--game')
     ap.add_argument('--run', action='store_true')
     ap.add_argument('--out')
+    ap.add_argument('--windows', action='store_true', help='cross-build for Windows x64 with zig')
     args = ap.parse_args()
     {'boot': boot, 'host': host, 'module': module}[args.target](args)
 

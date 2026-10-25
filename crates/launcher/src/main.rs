@@ -314,7 +314,7 @@ impl App {
                     ctx.request_repaint();
                 };
                 dx::ensure(&dir, &say)?;
-                let module = if game::USES_MODULE {
+                let module = if game::uses_module() {
                     let last = std::sync::Mutex::new((make::Step::Compiler, usize::MAX));
                     let prog = |step: make::Step, done: usize, total: usize| {
                         // at most one update per percent

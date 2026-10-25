@@ -35,7 +35,9 @@ typedef int host_sock;
 static int host_errno(void) { return errno; }
 #endif
 #include <ctype.h>
+#if !defined(_WIN32)
 #include <execinfo.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -402,6 +404,7 @@ static void sh_send(Guest* g)
         static long want = -2;
         if (want == -2)
             want = getenv("XIVLEGACY_SENDSTACK") ? strtol(getenv("XIVLEGACY_SENDSTACK"), NULL, 0) : -1;
+#if !defined(_WIN32)
         if (want >= 0 && (uint32_t)want == ARG(2))
         {
             void* frames[48];
@@ -409,6 +412,7 @@ static void sh_send(Guest* g)
             rt_log("[ws2] send of %u bytes from:\n", ARG(2));
             backtrace_symbols_fd(frames, k, 2);
         }
+#endif
     }
     int nb = s->nonblocking;
     if (!nb)

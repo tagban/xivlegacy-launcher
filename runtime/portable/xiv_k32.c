@@ -521,7 +521,11 @@ static void systime_now(uint16_t* y, uint16_t* mo, uint16_t* d, uint16_t* h, uin
 {
     time_t t = time(NULL);
     struct tm tm;
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
     localtime_r(&t, &tm);
+#endif
     *y = (uint16_t)(tm.tm_year + 1900), *mo = (uint16_t)(tm.tm_mon + 1), *d = (uint16_t)tm.tm_mday;
     *h = (uint16_t)tm.tm_hour, *mi = (uint16_t)tm.tm_min, *s = (uint16_t)tm.tm_sec;
 }

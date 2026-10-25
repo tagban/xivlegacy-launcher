@@ -41,11 +41,82 @@ pub fn installed(dir: &Path) -> bool {
         && std::fs::read_to_string(dir.join("game.ver")).is_ok_and(|v| v.trim() == "2012.09.19.0001")
 }
 
-/// Whether this system's client is the host plus a game module made on this machine.
-pub const USES_MODULE: bool = cfg!(target_os = "macos");
+/// Whether this system's client is our own: the host plus a game module made on this machine.
+/// macOS always; Windows while its graphics back end is finished, only with XIVLEGACY_NATIVE=1
+/// (otherwise the stock ffxivgame.exe as before).
+pub fn uses_module() -> bool {
+    cfg!(target_os = "macos") || (cfg!(windows) && std::env::var_os("XIVLEGACY_NATIVE").is_some())
+}
+
+/// The host program: in the app bundle's Helpers on macOS, beside XIVLegacy.exe on Windows.
+fn host_program() -> Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    let p = if cfg!(target_os = "macos") {
+        dir.parent().map(|contents| contents.join("Helpers/xivlegacy-host")).unwrap_or_default()
+    } else {
+        dir.join(if cfg!(windows) { "xivlegacy-host.exe" } else { "xivlegacy-host" })
+    };
+    if !p.is_file() {
+        bail!("this copy of XIVLegacy is missing its game host ({})", p.display());
+    }
+    Ok(p)
+}
+
+/// Starts our own client: the host with the game module this machine made. It takes the game
+/// folder and the session id, builds the game's launch argument itself, and sends the lobby to
+/// XIVLEGACY_LOBBY. Reports a game that closes within 30 seconds.
+pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Path) -> Result<()> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use anyhow::Context;
+
+    crate::sqex::launch_arg(session_id, 0)?; // the same session id check as the stock path
+    let helper = host_program()?;
+    let support = crate::config::dir();
+    let user = support.join("user");
+    std::fs::create_dir_all(&user)?;
+    let logs = if cfg!(target_os = "macos") {
+        dirs::home_dir().unwrap_or_default().join("Library/Logs/XIVLegacy")
+    } else {
+        support.join("logs")
+    };
+    std::fs::create_dir_all(&logs)?;
+    let log = std::fs::File::create(logs.join("game.log"))?;
+    let mut cmd = Command::new(&helper);
+    cmd.arg("--module")
+        .arg(module)
+        .arg(game_dir)
+        .arg(session_id)
+        .current_dir(&support)
+        .env("XIVLEGACY_USER", &user)
+        .env("XIVLEGACY_LOBBY", host)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console behind the game
+    }
+    let mut child = cmd.spawn().with_context(|| format!("starting {}", helper.display()))?;
+    crate::config::log(&format!("game started (pid {}) for {host}", child.id()));
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(30) {
+        if let Some(status) = child.try_wait()? {
+            crate::config::log(&format!("game closed early: {status}"));
+            bail!("The game closed right after starting ({status}). Its log: {}", logs.join("game.log").display());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
 
 #[cfg(windows)]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str, _module: Option<&Path>) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
+    if let Some(m) = module {
+        return launch_native(game_dir, host, session_id, m);
+    }
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null;
@@ -187,54 +258,11 @@ pub fn exit_meaning(code: u32) -> &'static str {
     }
 }
 
-/// macOS: the native client (no Wine), `Contents/Helpers/xivlegacy-game` in the
-/// app bundle. It is built on this Mac from the player's own ffxivgame.exe, so
-/// it is never downloaded. It takes the game folder and the session id, builds
-/// the game's launch argument itself, and sends the lobby to XIVLEGACY_LOBBY.
+/// macOS: always our own client.
 #[cfg(target_os = "macos")]
 pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-
     use anyhow::Context;
-
-    crate::sqex::launch_arg(session_id, 0)?; // the same session id check as Windows
-    let exe = std::env::current_exe()?;
-    let helpers = exe.parent().and_then(Path::parent).map(|contents| contents.join("Helpers")).unwrap_or_default();
-    let helper = helpers.join("xivlegacy-host");
-    if !helper.is_file() {
-        bail!("this copy of XIVLegacy is missing its game host (Contents/Helpers/xivlegacy-host)");
-    }
-    let module = module.context("no game module")?;
-    let support = crate::config::dir();
-    let user = support.join("user");
-    std::fs::create_dir_all(&user)?;
-    let logs = dirs::home_dir().unwrap_or_default().join("Library/Logs/XIVLegacy");
-    std::fs::create_dir_all(&logs)?;
-    let log = std::fs::File::create(logs.join("game.log"))?;
-    let mut child = Command::new(&helper)
-        .arg("--module")
-        .arg(module)
-        .arg(game_dir)
-        .arg(session_id)
-        .current_dir(&support)
-        .env("XIVLEGACY_USER", &user)
-        .env("XIVLEGACY_LOBBY", host)
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log))
-        .spawn()
-        .with_context(|| format!("starting {}", helper.display()))?;
-    crate::config::log(&format!("game started (pid {}) for {host}", child.id()));
-    // A game that closes within its first half minute failed to start: say how.
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(30) {
-        if let Some(status) = child.try_wait()? {
-            crate::config::log(&format!("game closed early: {status}"));
-            bail!("The game closed right after starting ({status}). Its log: ~/Library/Logs/XIVLegacy/game.log");
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    Ok(())
+    launch_native(game_dir, host, session_id, module.context("no game module")?)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
