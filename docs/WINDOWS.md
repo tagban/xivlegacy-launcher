@@ -24,9 +24,9 @@ From `%APPDATA%\XIVLegacy`, with a session id from signing in (the launcher logs
 bin-<version>\xivlegacy-host.exe --module game\xivlegacy-game-<key>.dll "<game folder>" <56-character session id>
 ```
 
-`XIVLEGACY_LOBBY=<server>` picks the server (name or IPv4; default 127.0.0.1). Without a session
-id the game reaches the title screen and fails at the lobby, which is enough for measuring the
-title screen.
+`XIVLEGACY_LOBBY=<server>` picks the server (name or IPv4; default 127.0.0.1). For measuring the
+title screen, point it at a server that answers (`XIVLEGACY_LOBBY=xiv.ffxi.cc`): with no lobby at
+all the game gives up and quits after about 30 frames.
 
 ## Switches worth knowing
 
@@ -53,7 +53,9 @@ directly would need clang or `zig cc` as CC, the SDL3 MinGW development package
 
 ## Open questions (October 2026)
 
-- **Frame rate** is below the Mac's on an RTX 4060 (wgpu on Vulkan). Measure with
+- **Frame rate** was 11.4 fps on an RTX 4060 (wgpu on Vulkan) with 0.1.7 under every setting:
+  about 11 ms of work and 77 ms of waiting per frame, the GPU idle at its lowest clock. 0.1.9
+  raises the timer resolution to 1 ms, the likely cause. Measure with
   `XIVLEGACY_FRAMESTATS=1`, then compare `XIVLEGACY_WGPU_BACKEND=dx12`, `XIVLEGACY_WGPU_PRESENT=immediate`
   and `XIVLEGACY_NOAUDIO=1`. On the Mac the wgpu back end spends its time replaying ~124 render
   passes per frame and copying ~14 MB/frame into its ring.
