@@ -12,7 +12,7 @@ the preserved copies from archive.org.
 ## Play on Windows
 
 1. Download **XIVLegacy.exe** from the
-   [latest release](https://github.com/tagban/xivlegacy-launcher/releases/latest)
+   [releases page](https://github.com/tagban/xivlegacy-launcher/releases)
    and run it. There is nothing to install first.
 2. **First run: game files.** XIVLegacy looks for the disc image (`.iso`, or
    the `.7z` it is preserved in) and `ffxiv_patches.zip` in your Downloads,
