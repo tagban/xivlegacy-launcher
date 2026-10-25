@@ -5,6 +5,7 @@
 
 mod config;
 mod game;
+mod lan;
 mod scan;
 mod sqex;
 mod web;
@@ -74,7 +75,9 @@ enum Msg {
     Installed(Result<PathBuf, String>),
     Checked(Result<(PathBuf, Option<String>), String>),
     Started(Result<(), String>),
-    Alive(String, bool),
+    /// (host, whether it answers, its local address if it answers only there)
+    Alive(String, bool, Option<String>),
+    Status(String),
 }
 
 #[derive(PartialEq)]
@@ -238,17 +241,22 @@ impl App {
         self.cfg.username = user.clone();
         self.cfg.save();
         let remember = self.cfg.remember;
+        let known_lan = self.cfg.servers[self.cfg.server].lan.clone();
         self.busy = true;
         self.say(if create { "Creating your account…" } else { "Signing in…" }, false);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         thread::spawn(move || {
             let r = (|| -> anyhow::Result<()> {
+                let target = match reach(&host, known_lan.as_deref(), &tx) {
+                    Some(t) => t,
+                    None => anyhow::bail!("The server at {host} didn't answer."),
+                };
                 if create {
-                    web::signup(&host, &user, &pass)?;
+                    web::signup(&target, &user, &pass)?;
                 }
-                let sid = web::login(&host, &user, &pass)?;
+                let sid = web::login(&target, &user, &pass)?;
                 config::set_password(&host, &user, remember.then_some(pass.as_str()));
-                game::launch(&dir, &host, &sid)
+                game::launch(&dir, &target, &sid)
             })();
             let _ = tx.send(Msg::Started(r.map_err(|e| format!("{e:#}"))));
             ctx.request_repaint();
@@ -261,10 +269,15 @@ impl App {
         }
         self.polled = Some(Instant::now());
         for s in &self.cfg.servers {
-            let (tx, ctx, host) = (self.tx.clone(), ctx.clone(), s.host.clone());
+            let (tx, ctx, host, lan) = (self.tx.clone(), ctx.clone(), s.host.clone(), s.lan.clone());
             thread::spawn(move || {
-                let up = web::alive(&host);
-                let _ = tx.send(Msg::Alive(host, up));
+                let msg = if web::alive(&host) {
+                    Msg::Alive(host, true, None)
+                } else {
+                    let local = lan::find(&host, lan.as_deref());
+                    Msg::Alive(host, local.is_some(), local)
+                };
+                let _ = tx.send(msg);
                 ctx.request_repaint();
             });
         }
@@ -308,9 +321,18 @@ impl App {
                     Err(e) => self.say(e, true),
                 }
             }
-            Msg::Alive(host, up) => {
+            Msg::Alive(host, up, local) => {
+                if let Some(local) = local {
+                    for s in self.cfg.servers.iter_mut().filter(|s| s.host == host) {
+                        if s.lan.as_deref() != Some(local.as_str()) {
+                            s.lan = Some(local.clone());
+                        }
+                    }
+                    self.cfg.save();
+                }
                 self.alive.insert(host, up);
             }
+            Msg::Status(text) => self.say(text, false),
         }
     }
 }
@@ -339,6 +361,18 @@ fn dev_screenshot(ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
     }
     ctx.request_repaint_after(Duration::from_millis(200));
+}
+
+/// The address to use for `host` from here: `host` itself when it answers,
+/// else its address on this network (the one found before, or a fresh search).
+fn reach(host: &str, known_lan: Option<&str>, tx: &Sender<Msg>) -> Option<String> {
+    if web::alive(host) {
+        return Some(host.to_string());
+    }
+    let _ = tx.send(Msg::Status(format!("{host} didn't answer; looking for it on this network…")));
+    let found = lan::find(host, known_lan)?;
+    let _ = tx.send(Msg::Alive(host.to_string(), true, Some(found.clone())));
+    Some(found)
 }
 
 fn gb(b: u64) -> String {
@@ -535,6 +569,7 @@ impl App {
                 }
             }
             let (text, color) = match self.alive.get(self.cfg.host()) {
+                Some(true) if self.cfg.servers[self.cfg.server].lan.is_some() => ("Online (this network)", egui::Color32::from_rgb(90, 200, 120)),
                 Some(true) => ("Online", egui::Color32::from_rgb(90, 200, 120)),
                 Some(false) => ("Offline", egui::Color32::from_rgb(240, 110, 100)),
                 None => ("Checking", egui::Color32::GRAY),
@@ -568,7 +603,7 @@ impl App {
                     let host = self.new_host.trim().to_string();
                     if ui.add_enabled(game::host_slot(&host).is_ok(), egui::Button::new("Add")).clicked() {
                         let name = if self.new_name.trim().is_empty() { host.clone() } else { self.new_name.trim().to_string() };
-                        self.cfg.servers.push(Server { name, host });
+                        self.cfg.servers.push(Server { name, host, lan: None });
                         self.cfg.server = self.cfg.servers.len() - 1;
                         self.cfg.save();
                         self.new_name.clear();

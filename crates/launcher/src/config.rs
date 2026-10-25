@@ -13,6 +13,10 @@ pub const DEFAULT_SERVER: &str = "xiv.ffxi.cc";
 pub struct Server {
     pub name: String,
     pub host: String,
+    /// The server's address on this network, found when `host` didn't answer
+    /// from here (a home server behind a router without hairpin NAT).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +33,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             game_dir: None,
-            servers: vec![Server { name: "XIVLegacy".into(), host: DEFAULT_SERVER.into() }],
+            servers: vec![Server { name: "XIVLegacy".into(), host: DEFAULT_SERVER.into(), lan: None }],
             server: 0,
             username: String::new(),
             remember: true,
