@@ -2895,6 +2895,18 @@ int g9_init(void* window, int vsync)
         g_surface = make_surface(g_window);
     WGPURequestAdapterOptions ao = { 0 };
     ao.powerPreference = WGPUPowerPreference_HighPerformance;
+    /* XIVLEGACY_WGPU_BACKEND=dx12|vulkan|metal|gl: which API wgpu drives (default: its own pick) */
+    {
+        const char* b = getenv("XIVLEGACY_WGPU_BACKEND");
+        if (b && !strcmp(b, "dx12"))
+            ao.backendType = WGPUBackendType_D3D12;
+        else if (b && !strcmp(b, "vulkan"))
+            ao.backendType = WGPUBackendType_Vulkan;
+        else if (b && !strcmp(b, "metal"))
+            ao.backendType = WGPUBackendType_Metal;
+        else if (b && !strcmp(b, "gl"))
+            ao.backendType = WGPUBackendType_OpenGL;
+    }
     ao.compatibleSurface = g_surface;
     WGPURequestAdapterCallbackInfo acb = { 0 };
     acb.mode = WGPUCallbackMode_AllowProcessEvents;

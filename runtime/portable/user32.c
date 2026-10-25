@@ -20,6 +20,7 @@
 #include "pe.h"
 #include "plat.h"
 #include "thunk.h"
+#include "xiv_icon.h"
 #include "user32.h"
 
 int (*user32_key_hook)(int scancode, int mods, int down);
@@ -798,6 +799,7 @@ static void sh_CreateWindowExA(Guest* g)
         w->sdl = SDL_CreateWindow(ARG(2) ? ARGS(2) : "", w->w, w->h, flags);
     }
     apply_frame(w);
+    xiv_icon_apply(w->sdl);
     if (!w->sdl)
         rt_log("[recomp] SDL_CreateWindow: %s\n", SDL_GetError());
 #if defined(_WIN32)

@@ -594,6 +594,9 @@ static void engine_thread(void* arg)
     gt_lock();
     gt_self();
     gt_unlock();
+    /* The device pulls in 10 ms steps rather than its own default (larger on some Windows drivers,
+     * where it emptied the queue between our batches). */
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "480");
     if (!getenv("XIVLEGACY_NOAUDIO") && SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
         SDL_AudioSpec spec = { SDL_AUDIO_F32, 2, OUT_RATE };
@@ -608,17 +611,26 @@ static void engine_thread(void* arg)
     const int pass_bytes = (int)sizeof out;
     for (;;)
     {
-        /* Passes go in batches while the device has 50-80 ms queued, taking the guest lock when it
-         * comes free (the render thread's frame Sleeps): asking the holder to yield at every pass,
-         * 100 times a second, cost the world a third of its frame rate. Below 40 ms it asks. */
+        /* Passes go in batches while the device has `ahead` passes queued (8 at first: 50-80 ms),
+         * taking the guest lock when it comes free (the render thread's frame Sleeps): asking the
+         * holder to yield at every pass, 100 times a second, cost the world a third of its frame
+         * rate. Below half of it it asks. When the device runs dry anyway (a device that pulls
+         * large chunks, a slow frame), `ahead` grows by a pass, up to 300 ms. */
+        static int ahead = 8;
         int urgent = 0, want = 1;
         if (g_stream)
         {
             int q;
-            while ((q = SDL_GetAudioStreamQueued(g_stream)) > 5 * pass_bytes)
+            while ((q = SDL_GetAudioStreamQueued(g_stream)) > (ahead - 3) * pass_bytes)
                 plat_sleep_ms(2);
-            urgent = q <= 4 * pass_bytes;
-            want = 8 - q / pass_bytes;
+            if (q == 0 && ahead < 30)
+            {
+                ahead++;
+                if (ahead % 4 == 0)
+                    rt_log("[xaudio2] the device ran dry: keeping %d ms queued now\n", ahead * 10);
+            }
+            urgent = q <= ahead / 2 * pass_bytes;
+            want = ahead - q / pass_bytes;
         }
         else
         {

@@ -21,6 +21,7 @@ sha2 = "0.10"
 dirs = "6"
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
+png = "0.17"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

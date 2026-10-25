@@ -6,6 +6,7 @@
 mod config;
 mod dx;
 mod game;
+mod icon;
 mod lan;
 mod make;
 mod scan;
@@ -59,13 +60,14 @@ fn main() -> eframe::Result {
             }
         }
     }
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("XIVLegacy")
-            .with_inner_size([560.0, 500.0])
-            .with_min_inner_size([480.0, 420.0]),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("XIVLegacy")
+        .with_inner_size([560.0, 500.0])
+        .with_min_inner_size([480.0, 420.0]);
+    if let Some(icon) = Config::load().game_dir.and_then(|d| game_icon(&d)) {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("XIVLegacy", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
 
@@ -125,6 +127,7 @@ enum Screen {
 }
 
 struct App {
+    ctx: egui::Context,
     cfg: Config,
     screen: Screen,
     tx: Sender<Msg>,
@@ -168,6 +171,7 @@ impl App {
             String::new()
         };
         let mut app = App {
+            ctx: cc.egui_ctx.clone(),
             screen: if ready { Screen::Launcher } else { Screen::Setup },
             tx,
             rx,
@@ -202,6 +206,12 @@ impl App {
             ctx.request_repaint();
         });
         app
+    }
+
+    fn set_icon(&self, game_dir: &Path) {
+        if let Some(icon) = game_icon(game_dir) {
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(icon))));
+        }
     }
 
     fn say(&mut self, text: impl Into<String>, error: bool) {
@@ -370,6 +380,7 @@ impl App {
                 self.patches = self.patches.take().or(f.patches);
             }
             Msg::Installed(Ok(dir)) => {
+                self.set_icon(&dir);
                 self.cfg.game_dir = Some(dir);
                 self.cfg.save();
                 self.screen = Screen::Launcher;
@@ -381,6 +392,7 @@ impl App {
             }
             Msg::Checked(Ok((dir, note))) => {
                 self.busy = false;
+                self.set_icon(&dir);
                 self.cfg.game_dir = Some(dir);
                 self.cfg.save();
                 self.screen = Screen::Launcher;
@@ -483,6 +495,12 @@ fn reach(host: &str, known_lan: Option<&str>, tx: &Sender<Msg>) -> Option<String
     let found = lan::find(host, known_lan)?;
     let _ = tx.send(Msg::Alive(host.to_string(), true, Some(found.clone())));
     Some(found)
+}
+
+/// The game's own icon (from the player's ffxivgame.exe), for the window and taskbar.
+fn game_icon(game_dir: &Path) -> Option<egui::IconData> {
+    let (rgba, width, height) = icon::from_exe(&game_dir.join("ffxivgame.exe"))?;
+    Some(egui::IconData { rgba, width, height })
 }
 
 fn gb(b: u64) -> String {

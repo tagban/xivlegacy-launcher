@@ -26,6 +26,7 @@
 #include "vfs.h"
 #include "ws2.h"
 #include "xiv_boot.h"
+#include "xiv_icon.h"
 
 #define GAME_DIR "C:\\Program Files\\SquareEnix\\FINAL FANTASY XIV"
 /* The user profile the game sees (Documents\\My Games\\..., AppData) lives in a folder of ours. */
@@ -63,6 +64,7 @@ int xiv_boot_prepare(int* argcp, char** argv)
     }
     char exe[1024];
     snprintf(exe, sizeof exe, "%s%cffxivgame.exe", argv[1], plat_path_sep);
+    xiv_icon_source(exe);
 
     if (!gwin_init())
     {
