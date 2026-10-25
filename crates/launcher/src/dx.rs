@@ -16,6 +16,7 @@ pub fn ensure(_game_dir: &std::path::Path, _say: &dyn Fn(&str)) -> anyhow::Resul
     Ok(())
 }
 
+
 #[cfg(windows)]
 mod imp {
     use std::io::{Read, Write};
@@ -123,16 +124,33 @@ mod imp {
         Ok(unpacked.join("DXSETUP.exe"))
     }
 
+    /// DXSETUP.exe from the disc copy kept by setup, else Microsoft's package.
+    fn installer(game_dir: &Path, say: &dyn Fn(&str)) -> Result<PathBuf> {
+        let disc = xivlegacy_install::directx::installer_dir(game_dir).join("DXSETUP.exe");
+        if disc.is_file() {
+            return Ok(disc);
+        }
+        microsoft_installer(&game_dir.with_file_name("DirectX (Microsoft)"), say)
+    }
+
+    /// Puts d3dx9_41.dll and xinput1_3.dll back next to the game if either is
+    /// missing. Whether anything was restored.
+    fn restore_dlls(game_dir: &Path, say: &dyn Fn(&str)) -> Result<bool> {
+        if xivlegacy_install::directx::present(game_dir) {
+            return Ok(false);
+        }
+        let setup = installer(game_dir, say)?;
+        say("Restoring the game's DirectX files…");
+        xivlegacy_install::directx::install_from_dir(setup.parent().unwrap_or(Path::new(".")), game_dir)?;
+        Ok(true)
+    }
+
     pub fn ensure(game_dir: &Path, say: &dyn Fn(&str)) -> Result<()> {
+        restore_dlls(game_dir, say)?;
         if xaudio_ok() {
             return Ok(());
         }
-        let disc = xivlegacy_install::directx::installer_dir(game_dir).join("DXSETUP.exe");
-        let setup = if disc.is_file() {
-            disc
-        } else {
-            microsoft_installer(&game_dir.with_file_name("DirectX (Microsoft)"), say)?
-        };
+        let setup = installer(game_dir, say)?;
         say("Installing DirectX audio (Windows will ask for permission)…");
         let code = run(&setup, "/silent", true)?;
         if !xaudio_ok() {

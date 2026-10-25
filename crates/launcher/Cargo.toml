@@ -13,17 +13,17 @@ path = "src/main.rs"
 xivlegacy-install = { path = "../install" }
 anyhow = "1"
 blowfish = "0.9"
+hex = "0.4"
+sha2 = "0.10"
 dirs = "6"
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = "2"
+ureq = { version = "2", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
-hex = "0.4"
-sha2 = "0.10"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Registry",

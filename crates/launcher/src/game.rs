@@ -55,9 +55,10 @@ pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
     use windows_sys::Win32::System::Memory::{PAGE_READWRITE, VirtualProtectEx};
     use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::System::Threading::{
-        CREATE_SUSPENDED, CreateProcessW, GetProcessAffinityMask, PROCESS_INFORMATION, ResumeThread,
-        STARTUPINFOW, SetProcessAffinityMask, TerminateProcess,
+        CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, GetProcessAffinityMask, PROCESS_INFORMATION,
+        ResumeThread, STARTUPINFOW, SetProcessAffinityMask, TerminateProcess, WaitForSingleObject,
     };
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
     let slot = host_slot(host)?;
     let exe = game_dir.join("ffxivgame.exe");
@@ -142,9 +143,44 @@ pub fn launch(game_dir: &Path, host: &str, session_id: &str) -> Result<()> {
             ResumeThread(pi.hThread);
         }
         CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
     }
-    patched
+    if let Err(e) = patched {
+        unsafe { CloseHandle(pi.hProcess) };
+        return Err(e);
+    }
+    crate::config::log(&format!("game started (pid {}) for {host}", pi.dwProcessId));
+    // A game that closes within its first half minute failed to start: say how.
+    let early = unsafe { WaitForSingleObject(pi.hProcess, EARLY_EXIT_MS) } == WAIT_OBJECT_0;
+    let mut code = 0u32;
+    if early {
+        unsafe { GetExitCodeProcess(pi.hProcess, &mut code) };
+    }
+    unsafe { CloseHandle(pi.hProcess) };
+    if early {
+        crate::config::log(&format!("game closed early, exit code {code:#010x}"));
+        bail!("The game closed right after starting (code {code:#010X}: {}).", exit_meaning(code));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+const EARLY_EXIT_MS: u32 = 30_000;
+
+/// What a Windows exit code from a game that closed at start-up means.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn exit_meaning(code: u32) -> &'static str {
+    match code {
+        0 => "it exited on its own",
+        0xC0000005 => "it crashed (access violation)",
+        0xC0000135 => "a DLL it needs is missing",
+        0xC0000142 => "a DLL it needs failed to start",
+        0xC000007B => "a DLL it found is the wrong kind (32/64-bit)",
+        0xC0000409 => "it stopped itself after a fatal error",
+        0xE06D7363 => "an unhandled C++ error",
+        0x80000003 => "it hit a breakpoint (an assertion failed)",
+        0xC000001D => "an instruction this processor doesn't support",
+        _ => "an unknown error",
+    }
 }
 
 #[cfg(not(windows))]

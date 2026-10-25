@@ -40,14 +40,30 @@ pub fn install(iso: &Path, out: &Path) -> Result<()> {
     for (cab_path, name, sha1) in FILES {
         let entry = udf.find(cab_path).with_context(|| format!("no {cab_path} on the disc"))?;
         let bytes = udf.read_all(&entry)?;
-        let data = extract(&bytes, name).with_context(|| format!("{name} from {cab_path}"))?;
-        let got = hex::encode(Sha1::digest(&data));
-        if got != sha1 {
-            bail!("{name} from {cab_path} has SHA-1 {got}, expected {sha1}");
-        }
-        fs::write(out.join(name), &data).with_context(|| format!("writing {}", out.join(name).display()))?;
+        write_checked(&bytes, cab_path, name, sha1, out)?;
     }
     Ok(())
+}
+
+/// The same from a folder of DirectX cabinets: the disc's installer kept by
+/// setup, or Microsoft's June 2010 redistributable unpacked (it carries the
+/// same March 2009 and April 2007 cabinets).
+pub fn install_from_dir(cabs: &Path, out: &Path) -> Result<()> {
+    for (cab_path, name, sha1) in FILES {
+        let file = cab_path.rsplit('/').next().unwrap_or(cab_path);
+        let bytes = fs::read(cabs.join(file)).with_context(|| format!("no {file} in {}", cabs.display()))?;
+        write_checked(&bytes, file, name, sha1, out)?;
+    }
+    Ok(())
+}
+
+fn write_checked(cabinet: &[u8], cab_name: &str, name: &str, sha1: &str, out: &Path) -> Result<()> {
+    let data = extract(cabinet, name).with_context(|| format!("{name} from {cab_name}"))?;
+    let got = hex::encode(Sha1::digest(&data));
+    if got != sha1 {
+        bail!("{name} from {cab_name} has SHA-1 {got}, expected {sha1}");
+    }
+    fs::write(out.join(name), &data).with_context(|| format!("writing {}", out.join(name).display()))
 }
 
 /// Where the DirectX installer is kept for a game folder: "<game folder> DirectX".

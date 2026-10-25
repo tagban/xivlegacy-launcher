@@ -25,6 +25,11 @@ the preserved copies from archive.org.
    `xiv.ffxi.cc`; **Edit…** adds others. **Create Account** makes an account
    on the selected server with the name and password you typed.
 
+XIVLegacy checks for a newer version when it starts and offers **Update
+now**, which replaces itself and restarts. **Repair…** (bottom right) reinstalls
+DirectX if needed and checks every game file; if any are missing or damaged it
+offers to reinstall the game files.
+
 Windows may warn that the program is from an unknown publisher (it isn't
 code-signed yet): choose **More info → Run anyway**.
 

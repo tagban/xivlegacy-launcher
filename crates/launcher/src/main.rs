@@ -9,6 +9,7 @@ mod game;
 mod lan;
 mod scan;
 mod sqex;
+mod update;
 mod web;
 
 use std::collections::HashMap;
@@ -79,6 +80,10 @@ enum Msg {
     /// (host, whether it answers, its local address if it answers only there)
     Alive(String, bool, Option<String>),
     Status(String),
+    Update(Option<update::Available>),
+    Updated(Result<(), String>),
+    /// Repair finished: (game files missing, files different), or why it couldn't run.
+    Repaired(Result<(usize, usize), String>),
 }
 
 #[derive(PartialEq)]
@@ -109,6 +114,10 @@ struct App {
     editing: bool,
     new_name: String,
     new_host: String,
+    // updates and repair
+    update: Option<update::Available>,
+    updating: bool,
+    broken: bool,
 }
 
 impl App {
@@ -144,11 +153,21 @@ impl App {
             editing: false,
             new_name: String::new(),
             new_host: String::new(),
+            update: None,
+            updating: false,
+            broken: false,
             cfg,
         };
         if !ready {
             app.start_scan(&cc.egui_ctx);
         }
+        update::clean_up();
+        let (tx, ctx) = (app.tx.clone(), cc.egui_ctx.clone());
+        thread::spawn(move || {
+            let found = update::check(VERSION).unwrap_or(None);
+            let _ = tx.send(Msg::Update(found));
+            ctx.request_repaint();
+        });
         app
     }
 
@@ -263,6 +282,7 @@ impl App {
                 };
                 dx::ensure(&dir, &say)?;
                 say("Starting the game…");
+                config::log(&format!("joining {host} via {target}"));
                 game::launch(&dir, &target, &sid)
             })();
             let _ = tx.send(Msg::Started(r.map_err(|e| format!("{e:#}"))));
@@ -324,8 +344,11 @@ impl App {
             Msg::Started(r) => {
                 self.busy = false;
                 match r {
-                    Ok(()) => self.say("The game is starting. Have fun!", false),
-                    Err(e) => self.say(e, true),
+                    Ok(()) => self.say("The game is running. Have fun!", false),
+                    Err(e) => {
+                        config::log(&format!("join failed: {e}"));
+                        self.say(e, true)
+                    }
                 }
             }
             Msg::Alive(host, up, local) => {
@@ -340,6 +363,29 @@ impl App {
                 self.alive.insert(host, up);
             }
             Msg::Status(text) => self.say(text, false),
+            Msg::Update(a) => self.update = a,
+            Msg::Updated(Ok(())) => std::process::exit(0),
+            Msg::Updated(Err(e)) => {
+                self.updating = false;
+                self.say(format!("Update failed: {e}"), true);
+            }
+            Msg::Repaired(r) => {
+                self.busy = false;
+                match r {
+                    Ok((0, 0)) => {
+                        self.broken = false;
+                        self.say("Repair finished: DirectX is in place and every game file checks out.", false);
+                    }
+                    Ok((missing, wrong)) => {
+                        self.broken = true;
+                        self.say(
+                            format!("{missing} game files are missing and {wrong} are damaged. Reinstall the game files to fix them."),
+                            true,
+                        );
+                    }
+                    Err(e) => self.say(format!("Repair stopped: {e}"), true),
+                }
+            }
         }
     }
 }
@@ -417,14 +463,23 @@ impl eframe::App for App {
                 ui.weak(format!("XIVLegacy {VERSION}"));
                 if let (Screen::Launcher, Some(dir)) = (&self.screen, self.cfg.game_dir.clone()) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Change…").on_hover_text("Use another game folder, or install again").clicked() {
+                        if ui.add_enabled(!self.busy, egui::Button::new("Repair…").small())
+                            .on_hover_text("Reinstall DirectX if needed and check every game file")
+                            .clicked()
+                        {
+                            self.repair(ctx);
+                        }
+                        if ui
+                            .small_button("Game folder…")
+                            .on_hover_text(format!("{}\nUse another game folder, or install again", dir.display()))
+                            .clicked()
+                        {
                             self.screen = Screen::Setup;
                             self.say("", false);
                             if self.disc.is_none() && self.patches.is_none() {
                                 self.start_scan(ctx);
                             }
                         }
-                        ui.weak(dir.display().to_string());
                     });
                 }
             });
@@ -435,6 +490,7 @@ impl eframe::App for App {
             ui.heading("XIVLegacy");
             ui.label("FINAL FANTASY XIV 1.23b on private servers");
             ui.separator();
+            self.update_banner(ui, ctx);
             match self.screen {
                 Screen::Setup => self.setup_ui(ui, ctx),
                 Screen::Installing => self.installing_ui(ui),
@@ -453,6 +509,77 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn update_banner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(a) = self.update.clone() else { return };
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(egui::Color32::from_rgb(120, 180, 255), format!("XIVLegacy {} is available.", a.version));
+            if update::can_install(&a) {
+                if ui.add_enabled(!self.updating && !self.busy, egui::Button::new("Update now")).clicked() {
+                    self.updating = true;
+                    self.say("Downloading the update…", false);
+                    let (tx, ctx, a) = (self.tx.clone(), ctx.clone(), a.clone());
+                    thread::spawn(move || {
+                        let r = update::install(&a).map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Msg::Updated(r));
+                        ctx.request_repaint();
+                    });
+                }
+            } else {
+                ui.hyperlink_to("Download", update::RELEASES_PAGE);
+            }
+            ui.hyperlink_to("What's new", &a.page);
+            if self.updating {
+                ui.spinner();
+            }
+        });
+        ui.separator();
+    }
+
+    /// Repair: DirectX (the game's DLLs and XAudio2), then every game file hashed.
+    fn repair(&mut self, ctx: &egui::Context) {
+        let Some(dir) = self.cfg.game_dir.clone() else { return };
+        self.busy = true;
+        self.say("Repairing: checking DirectX…", false);
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        thread::spawn(move || {
+            let r = (|| -> anyhow::Result<(usize, usize)> {
+                let say = |t: &str| {
+                    let _ = tx.send(Msg::Status(t.to_string()));
+                    ctx.request_repaint();
+                };
+                dx::ensure(&dir, &say)?;
+                say("Repairing: checking every game file (a minute or two)…");
+                let c = verify::check(&dir, true, &Counter::default())?;
+                config::log(&format!("repair: {} missing, {} different, game.ver {:?}", c.missing.len(), c.wrong.len(), c.game_version));
+                Ok((c.missing.len(), c.wrong.len() + usize::from(!c.ok() && c.missing.is_empty() && c.wrong.is_empty())))
+            })();
+            let _ = tx.send(Msg::Repaired(r.map_err(|e| format!("{e:#}"))));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Moves the damaged install aside and opens setup to build it again in the same place.
+    fn reinstall(&mut self, ctx: &egui::Context) {
+        let Some(dir) = self.cfg.game_dir.clone() else { return };
+        let mut aside = dir.with_file_name(format!("{} (old)", file_name(&dir)));
+        let mut n = 2;
+        while aside.exists() {
+            aside = dir.with_file_name(format!("{} (old {n})", file_name(&dir)));
+            n += 1;
+        }
+        if let Err(e) = std::fs::rename(&dir, &aside) {
+            return self.say(format!("Couldn't move the old game folder aside: {e}"), true);
+        }
+        config::log(&format!("reinstall: moved {} to {}", dir.display(), aside.display()));
+        self.broken = false;
+        self.install_dir = dir;
+        self.screen = Screen::Setup;
+        self.say(format!("The old files are in \"{}\"; delete that folder once the new install works.", file_name(&aside)), false);
+        if self.disc.is_none() && self.patches.is_none() {
+            self.start_scan(ctx);
+        }
+    }
+
     fn setup_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label(egui::RichText::new("First, the game files").strong());
         ui.label(
@@ -652,5 +779,8 @@ impl App {
                 ui.spinner();
             }
         });
+        if self.broken && !self.busy && ui.button("Reinstall the game files").clicked() {
+            self.reinstall(ctx);
+        }
     }
 }

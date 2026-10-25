@@ -74,6 +74,21 @@ impl Config {
     }
 }
 
+/// Appends a line to launcher.log in the settings folder (what happened at
+/// Join, for troubleshooting). The log is trimmed when it passes 256 KB.
+pub fn log(line: &str) {
+    use std::io::Write;
+    let path = dir().join("launcher.log");
+    let _ = fs::create_dir_all(dir());
+    if path.metadata().is_ok_and(|m| m.len() > 256 * 1024) {
+        let _ = fs::rename(&path, dir().join("launcher.old.log"));
+    }
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "[{secs}] {line}");
+    }
+}
+
 /// The saved password for (server, user), if any.
 pub fn password(host: &str, user: &str) -> Option<String> {
     keyring::Entry::new(&format!("XIVLegacy {host}"), user).ok()?.get_password().ok()

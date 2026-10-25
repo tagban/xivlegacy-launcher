@@ -23,7 +23,7 @@ usage:
       Which download links setup will use, and where they came from (sources.json
       beside the program, else the repository's copy, else built in).
 debugging:
-  xivlegacy-install iso-ls <iso> [dir] | iso-sha1 <iso> <path> | disc-extract <iso> <out> [skip] | dx-extract <iso> <out> | dx-installer <iso> <out>";
+  xivlegacy-install iso-ls <iso> [dir] | iso-sha1 <iso> <path> | disc-extract <iso> <out> [skip] | dx-extract <iso|cab folder> <out> | dx-installer <iso> <out>";
 
 /// One updating terminal line: step, percent, bytes, speed, time left.
 struct Terminal {
@@ -189,7 +189,12 @@ fn main() -> Result<()> {
             eprintln!("DirectX installer copied to {}", args[3]);
         }
         Some("dx-extract") => {
-            directx::install(Path::new(&args[2]), Path::new(&args[3]))?;
+            let src = Path::new(&args[2]);
+            if src.is_dir() {
+                directx::install_from_dir(src, Path::new(&args[3]))?;
+            } else {
+                directx::install(src, Path::new(&args[3]))?;
+            }
             eprintln!("{}", directx::file_names().collect::<Vec<_>>().join(", "));
         }
         Some("disc-extract") => {
