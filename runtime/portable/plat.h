@@ -30,6 +30,10 @@ uint32_t plat_thread_id(void);
 int plat_thread_start(void (*fn)(void*), void* arg);
 /* Sends sig to every thread plat_thread_start started (POSIX; for debugging). */
 void plat_signal_threads(int sig);
+#if defined(_WIN32)
+/* Windows: opts the process out of power throttling (EcoQoS), which coalesces its timers. */
+void plat_no_throttling(void);
+#endif
 void plat_sleep_ms(uint32_t ms);
 void plat_yield(void);
 

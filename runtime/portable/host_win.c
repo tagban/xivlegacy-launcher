@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 
+#include "plat.h"
 #include "runtime.h"
 #include "xiv_boot.h"
 
@@ -30,6 +31,14 @@ int main(int argc, char** argv)
      * the rest, through WaitOnAddress) take 15.6 without this, enough to hold the frame rate down
      * and make the audio engine late. */
     timeBeginPeriod(1);
+    plat_no_throttling();
+    /* a check that lands in the log: what a 2 ms sleep costs here */
+    {
+        uint64_t t0 = rt_monotonic_ns();
+        for (int i = 0; i < 5; ++i)
+            plat_sleep_ms(2);
+        printf("[host] 5 sleeps of 2 ms took %.1f ms\n", (double)(rt_monotonic_ns() - t0) * 1e-6);
+    }
     SetUnhandledExceptionFilter(on_crash);
     setvbuf(stdout, NULL, _IONBF, 0);
     int rc = xiv_boot_prepare(&argc, argv);

@@ -10,6 +10,25 @@
 
 const char plat_path_sep = '\\';
 
+/* Windows 11 power throttling (EcoQoS): a process it considers background gets its timers
+ * coalesced and its timer resolution requests ignored, so a 2 ms Sleep could take 76 ms. The host
+ * and every thread it starts opt out. */
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+void plat_no_throttling(void)
+{
+    PROCESS_POWER_THROTTLING_STATE p = { PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0 };
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &p, sizeof p);
+}
+
+static void thread_no_throttling(void)
+{
+    THREAD_POWER_THROTTLING_STATE t = { THREAD_POWER_THROTTLING_CURRENT_VERSION, THREAD_POWER_THROTTLING_EXECUTION_SPEED, 0 };
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &t, sizeof t);
+}
+
 void* plat_reserve(size_t size)
 {
     return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
@@ -52,6 +71,7 @@ typedef struct ThreadStart
 
 static DWORD WINAPI thread_entry(LPVOID p)
 {
+    thread_no_throttling();
     ThreadStart s = *(ThreadStart*)p;
     free(p);
     s.fn(s.arg);
