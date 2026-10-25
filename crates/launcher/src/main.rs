@@ -313,7 +313,10 @@ impl App {
                     let _ = tx.send(Msg::Status(t.to_string()));
                     ctx.request_repaint();
                 };
-                dx::ensure(&dir, &say)?;
+                // The stock exe needs 2010's DirectX; our client doesn't use it.
+                if !game::uses_module() {
+                    dx::ensure(&dir, &say)?;
+                }
                 let module = if game::uses_module() {
                     let last = std::sync::Mutex::new((make::Step::Compiler, usize::MAX));
                     let prog = |step: make::Step, done: usize, total: usize| {

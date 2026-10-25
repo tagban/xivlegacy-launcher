@@ -21,7 +21,12 @@ the preserved copies from archive.org.
    if archive.org is down. It then builds a clean 1.23b
    install (about 12 GB) in `%LOCALAPPDATA%\XIVLegacy`. Already have a 1.23b
    folder? Choose **I already have the game…** instead.
-3. **After that: pick a server and Join.** The list starts with
+3. **First Join: making the game.** XIVLegacy runs its own client, not the
+   2010 `ffxivgame.exe`: it translates your copy of the game's code into a
+   modern program and compiles it for your computer (a few minutes, once; it
+   downloads the zig compiler, about 90 MB, the first time). Nothing of the
+   game is downloaded.
+4. **After that: pick a server and Join.** The list starts with
    `xiv.ffxi.cc`; **Edit…** adds others. **Create Account** makes an account
    on the selected server with the name and password you typed.
 
@@ -33,13 +38,8 @@ offers to reinstall the game files.
 Windows may warn that the program is from an unknown publisher (it isn't
 code-signed yet): choose **More info → Run anyway**.
 
-What it changes: nothing outside its own folders, except DirectX audio. The
-game's DirectX 9 files (`d3dx9_41.dll`, `xinput1_3.dll`) are taken from the
-disc's own DirectX installer and put next to the game. The game's audio
-(XAudio2 2.4) has to be registered by Microsoft's DirectX installer, so the
-first time you Join, if it's missing, XIVLegacy runs that installer silently
-(from the disc, or Microsoft's own download for older installs) and Windows
-asks for permission once. The server address is written into the
+What it changes: nothing outside its own folders. Its client draws with
+Direct3D 12 or Vulkan (through wgpu) and needs none of 2010's DirectX. The server address is written into the
 game's memory when it starts; the game files on disk stay as installed.
 Passwords are kept only if you tick **Remember me**, in Windows Credential
 Manager.

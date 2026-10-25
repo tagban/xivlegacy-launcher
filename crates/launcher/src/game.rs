@@ -42,10 +42,9 @@ pub fn installed(dir: &Path) -> bool {
 }
 
 /// Whether this system's client is our own: the host plus a game module made on this machine.
-/// macOS always; Windows while its graphics back end is finished, only with XIVLEGACY_NATIVE=1
-/// (otherwise the stock ffxivgame.exe as before).
+/// Always on macOS; on Windows unless XIVLEGACY_STOCK=1 asks for the stock ffxivgame.exe.
 pub fn uses_module() -> bool {
-    cfg!(target_os = "macos") || (cfg!(windows) && std::env::var_os("XIVLEGACY_NATIVE").is_some())
+    cfg!(target_os = "macos") || (cfg!(windows) && std::env::var_os("XIVLEGACY_STOCK").is_none())
 }
 
 /// The host program: in the app bundle's Helpers on macOS, beside XIVLegacy.exe on Windows.
@@ -57,10 +56,34 @@ fn host_program() -> Result<std::path::PathBuf> {
     } else {
         dir.join(if cfg!(windows) { "xivlegacy-host.exe" } else { "xivlegacy-host" })
     };
-    if !p.is_file() {
-        bail!("this copy of XIVLegacy is missing its game host ({})", p.display());
+    if p.is_file() {
+        return Ok(p);
     }
-    Ok(p)
+    if let Some(unpacked) = unpack_embedded_host()? {
+        return Ok(unpacked);
+    }
+    bail!("this copy of XIVLegacy is missing its game host ({})", p.display())
+}
+
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/host_files.rs"));
+}
+
+/// Windows release builds carry the host inside XIVLegacy.exe: it is written once per version to
+/// the settings folder (bin-<version>) and run from there.
+fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
+    if embedded::HOST_FILES.is_empty() {
+        return Ok(None);
+    }
+    let dir = crate::config::dir().join(format!("bin-{}", env!("CARGO_PKG_VERSION")));
+    std::fs::create_dir_all(&dir)?;
+    for (name, bytes) in embedded::HOST_FILES {
+        let p = dir.join(name);
+        if p.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+            std::fs::write(&p, bytes)?;
+        }
+    }
+    Ok(Some(dir.join(embedded::HOST_FILES[0].0)))
 }
 
 /// Starts our own client: the host with the game module this machine made. It takes the game
