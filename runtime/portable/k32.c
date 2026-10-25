@@ -620,12 +620,31 @@ static void sh_GetSystemTimeAsFileTime(Guest* g)
 static void sh_Sleep(Guest* g)
 {
     uint32_t ms = ARG(0);
+    /* XIVLEGACY_WAITPROF: on the drawing thread, the time asked for, slept, and spent getting the
+     * guest lock back, summed over 2 s (logged with the [waitprof] line) */
+    int prof = thunk_timer && plat_thread_id() == thunk_prof_thread;
+    uint64_t t0 = prof ? rt_monotonic_ns() : 0;
     gt_unlock();
     if (ms)
         plat_sleep_ms(ms);
     else
         plat_yield();
+    uint64_t t1 = prof ? rt_monotonic_ns() : 0;
     gt_lock();
+    if (prof)
+    {
+        static uint64_t asked, slept, locked, n, since;
+        uint64_t t2 = rt_monotonic_ns();
+        asked += ms, slept += t1 - t0, locked += t2 - t1, n++;
+        if (!since)
+            since = t2;
+        else if (t2 - since >= 2000000000ull)
+        {
+            rt_log("[waitprof] Sleep x%llu: asked %llu ms, slept %.0f ms, getting the lock back %.0f ms\n",
+                (unsigned long long)n, (unsigned long long)asked, (double)slept * 1e-6, (double)locked * 1e-6);
+            asked = slept = locked = n = 0, since = t2;
+        }
+    }
     RET(0, 1);
 }
 
