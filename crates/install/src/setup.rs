@@ -18,6 +18,7 @@ use crate::progress::{Counter, Phase, Report};
 pub const ISO_7Z: Source = Source {
     name: "Final Fantasy XIV Online (USA, Japan) (En,Ja,Fr,De).7z",
     url: "https://archive.org/download/Nova_FFXIV_JPN/Final%20Fantasy%20XIV%20Online%20%28USA%2C%20Japan%29%20%28En%2CJa%2CFr%2CDe%29.7z",
+    mirrors: &[],
     size: 4_894_433_109,
     sha1: "6cc15039ba362a095ab422239d066f9ba77e28b1",
 };
@@ -26,6 +27,7 @@ pub const ISO_7Z: Source = Source {
 pub const PATCHES_ZIP: Source = Source {
     name: "ffxiv_patches.zip",
     url: "https://archive.org/download/ffxiv_patches/ffxiv_patches.zip",
+    mirrors: &[],
     size: 6_174_308_511,
     sha1: "65d763b150f46d9a68c4c58c763ee14966a74acd",
 };
