@@ -8,6 +8,11 @@ The host carries the runtime, graphics, sound, input and networking, with none o
 so it can ship; the module is the translation of one player's ffxivgame.exe, made on their machine
 (runtime/xiv_game.h). CC picks the module's compiler (default clang; "zig cc" works too).
 
+The graphics back end under Direct3D 9 (runtime/portable/gfx9.h) is XIVLEGACY_GFX: "metal"
+(gfx9_metal.m; the default on macOS) or "wgpu" (gfx9_wgpu.c on wgpu-native: Direct3D 12 on Windows,
+Vulkan on Linux, Metal on macOS; the only one off macOS). wgpu-native is found at WGPU_NATIVE, else
+`brew --prefix wgpu-native`. Each back end keeps its own runtime objects (build/obj/<target>-<gfx>).
+
 The translation (generated/c, from crates/recomp) compiles once into build/gen/*.o and is reused;
 only stale objects rebuild. Everything under generated/ and build/ is derived from Square Enix's
 code: never commit it.
@@ -34,8 +39,28 @@ CFLAGS += ['-I', SDL + '/include']
 LIBS = ['-L' + SDL + '/lib', '-lSDL3', '-Wl,-rpath,' + SDL + '/lib', '-lm', '-lpthread']
 if sys.platform == 'darwin':
     CFLAGS += ['-DRT_GUEST_FIXED_BASE=0x300000000ull']  # gwin.c reserves the guest window exactly there
+
+# the graphics back end (see the top): Metal by default on macOS, wgpu everywhere else
+GFX = os.environ.get('XIVLEGACY_GFX') or ('metal' if sys.platform == 'darwin' else 'wgpu')
+RUNTIME_FLAGS = []  # the runtime's own compiler flags (not the translation's: build/gen stays as built)
+if GFX == 'metal':
+    if sys.platform != 'darwin':
+        raise SystemExit('XIVLEGACY_GFX=metal is macOS only: use wgpu')
     RUNTIME += ['runtime/portable/sm3.c', 'runtime/portable/sm3_msl.c', 'runtime/portable/sm3_interp.c', 'runtime/portable/gfx9_metal.m']
     LIBS += ['-framework', 'Metal', '-framework', 'QuartzCore', '-framework', 'Foundation', '-framework', 'CoreGraphics', '-framework', 'ImageIO']
+elif GFX == 'wgpu':
+    WGPU = os.environ.get('WGPU_NATIVE')
+    if not WGPU:
+        try:
+            WGPU = subprocess.run(['brew', '--prefix', 'wgpu-native'], capture_output=True, text=True).stdout.strip()
+        except OSError:
+            WGPU = ''
+    WGPU = WGPU or '/opt/homebrew/opt/wgpu-native'
+    RUNTIME_FLAGS += ['-I', WGPU + '/include']
+    RUNTIME += ['runtime/portable/sm3.c', 'runtime/portable/sm3_wgsl.c', 'runtime/portable/gfx9_wgpu.c']
+    LIBS += ['-L' + WGPU + '/lib', '-lwgpu_native', '-Wl,-rpath,' + WGPU + '/lib']
+else:
+    raise SystemExit('XIVLEGACY_GFX=%s: metal or wgpu' % GFX)
 if sys.platform.startswith('linux'):
     CFLAGS.append('-D_GNU_SOURCE')
 
@@ -102,13 +127,18 @@ def flags_changed(objdir, flags):
     open(stamp, 'w').write(now)
 
 
+def runtime_objdir(target):
+    """the runtime's objects per target and back end (Metal keeps the folders it always had)"""
+    return 'build/obj/' + target + ('' if GFX == 'metal' else '-' + GFX)
+
+
 def boot(args):
     # the translation includes guest.h / runtime.h / sse.h only; the runtime, every header
     flags_changed('build/gen', GEN_FLAGS)
-    flags_changed('build/obj/boot', ['-O1', '-Wall'])
+    objdir, flags = runtime_objdir('boot'), ['-O1', '-Wall'] + RUNTIME_FLAGS
+    flags_changed(objdir, flags)
     objs = compile_stale(generated(), 'build/gen', GEN_FLAGS)
-    objs += compile_stale(RUNTIME + BOOT_ONLY + ['tests/boot.c'], 'build/obj/boot', ['-O1', '-Wall'],
-                          ('runtime', 'runtime/portable'))
+    objs += compile_stale(RUNTIME + BOOT_ONLY + ['tests/boot.c'], objdir, flags, ('runtime', 'runtime/portable'))
     run(['clang', '-o', 'build/boot'] + objs + LIBS)
     if args.run:
         if not args.game:
@@ -121,9 +151,9 @@ MODULE_EXT = '.dylib' if sys.platform == 'darwin' else '.dll' if sys.platform ==
 
 def host(args):
     """build/xivlegacy-host: the runtime without the translation; it loads the game with --module."""
-    flags = ['-O1', '-Wall', '-DXIVLEGACY_SPLIT']
-    flags_changed('build/obj/host', flags)
-    objs = compile_stale(RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c'], 'build/obj/host', flags,
+    objdir, flags = runtime_objdir('host'), ['-O1', '-Wall', '-DXIVLEGACY_SPLIT'] + RUNTIME_FLAGS
+    flags_changed(objdir, flags)
+    objs = compile_stale(RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c'], objdir, flags,
                          ('runtime', 'runtime/portable'))
     run(['clang', '-o', 'build/xivlegacy-host'] + objs + LIBS)
     print('built build/xivlegacy-host; run: build/xivlegacy-host --module build/xivlegacy-game%s <1.23b install>'
