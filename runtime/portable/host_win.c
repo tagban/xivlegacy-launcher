@@ -6,6 +6,7 @@
  * the profilers) around the same start. */
 #include <winsock2.h>
 #include <windows.h>
+#include <timeapi.h>
 
 #include <stdio.h>
 
@@ -24,6 +25,11 @@ int main(int argc, char** argv)
 {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+    /* Timeouts on Windows round up to the system timer's tick, 15.6 ms by default, and since
+     * Windows 10 2004 each program sets its own: the game's 1 ms waits (WaitForSingleObject and
+     * the rest, through WaitOnAddress) take 15.6 without this, enough to hold the frame rate down
+     * and make the audio engine late. */
+    timeBeginPeriod(1);
     SetUnhandledExceptionFilter(on_crash);
     setvbuf(stdout, NULL, _IONBF, 0);
     int rc = xiv_boot_prepare(&argc, argv);
