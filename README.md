@@ -4,6 +4,8 @@ FINAL FANTASY XIV 1.23b (the original 2010 game, not A Realm Reborn) as a
 self-contained program for macOS and Windows that connects to the private
 server you choose, and lives alongside retail FFXIV without touching it.
 
+**Community:** questions, testing and news on the [XIVLegacy Discord](https://discord.gg/D9k3khqvy8).
+
 For private servers only, such as
 [XIVLegacy Server](https://github.com/tagban/xivlegacy-server). This project
 ships no Square Enix files: you supply the game, or let the installer fetch
