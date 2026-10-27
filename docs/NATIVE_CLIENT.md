@@ -62,7 +62,9 @@ button is No.
 | `XIVLEGACY_MSLDUMP=<dir>` | each translated shader pair's Metal source, named by the ids traces print |
 | `XIVLEGACY_VBCHECK` | log indexed draws whose indices reach past the vertex data supplied |
 | `XIVLEGACY_DUMP_SHADERS=<dir>` | every shader's bytecode, plus the pairs drawn with (`tools/msl_check.m` compiles them all) |
-| `XIVLEGACY_RECOMP_TRACE=<substring>` / `=1`, `XIVLEGACY_RECOMP_FIRSTCALLS=1` | import calls (`=1` also logs failed file opens) |
+| `XIVLEGACY_RECOMP_TRACE=<substring>` / `=1`, `XIVLEGACY_RECOMP_FIRSTCALLS=1` | import calls, with the calling thread (`=1` also logs failed file opens) |
+| `XIVLEGACY_SLOW_LOADING=1`, `XIVLEGACY_LOADINGLOG=1` | load at the game's own pace (no loading-screen speedups, to compare); log the loading screen going up and down |
+| `XIVLEGACY_LONGCALLS=<ms>` | each import call that took at least that long, with its thread and call site (what the game waits in when it looks idle) |
 | `XIVLEGACY_FILES_TRACE=1` | every file the game opens, with its handle |
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |

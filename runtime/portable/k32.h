@@ -33,6 +33,9 @@ void xiv_k32_init(void);
 void xiv_misc_init(void);
 void xiv_patches_apply(void); /* xiv_misc.c: after pe_load */
 void xiv_game_log_poll(void);  /* xiv_misc.c: each frame (XIVLEGACY_GAMELOG) */
+void xiv_loading_poll(void);   /* xiv_misc.c: each frame, on the drawing thread */
+/* k32.c: when set, the time a Sleep sleeps, given its call site and the time asked for */
+extern uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
 /* d3d9.c: Direct3D 9 (in progress). */
 void d3d9_init(void);
 void d3dx9_init(void);

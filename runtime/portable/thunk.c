@@ -184,7 +184,25 @@ int thunk_dispatch(Guest* g, uint32_t target)
     {
         uint32_t site = rd32(g->esp), a0 = rd32(g->esp + 4), a1 = rd32(g->esp + 8), a2 = rd32(g->esp + 12), a3 = rd32(g->esp + 16);
         s(g);
-        rt_log("[trace] %08x %-44s (%08x %08x %08x %08x) = %08x\n", site, name, a0, a1, a2, a3, g->eax);
+        rt_log("[trace] %u %08x %-44s (%08x %08x %08x %08x) = %08x\n", plat_thread_id(), site, name, a0, a1, a2, a3, g->eax);
+        return 1;
+    }
+    /* XIVLEGACY_LONGCALLS=<ms>: each shim call that took at least that long, with its call site
+     * and thread (what the game waits in when it looks idle; fiber switches left out) */
+    static int long_ms = -1;
+    if (long_ms < 0)
+        long_ms = getenv("XIVLEGACY_LONGCALLS") ? atoi(getenv("XIVLEGACY_LONGCALLS")) : 0;
+    if (long_ms && !t_depth && !strstr(name, "SwitchToFiber"))
+    {
+        uint32_t site = rd32(g->esp), a0 = rd32(g->esp + 4), a1 = rd32(g->esp + 8), a2 = rd32(g->esp + 12), a3 = rd32(g->esp + 16);
+        uint64_t t0 = rt_monotonic_ns();
+        t_depth++;
+        s(g);
+        t_depth--;
+        uint64_t ns = rt_monotonic_ns() - t0;
+        if (ns >= (uint64_t)long_ms * 1000000u)
+            rt_log("[long] %.0f ms thread %u %08x %-36s (%08x %08x %08x %08x) = %08x\n", (double)ns * 1e-6, plat_thread_id(), site, name,
+                a0, a1, a2, a3, g->eax);
         return 1;
     }
     if (thunk_timer && !t_depth)

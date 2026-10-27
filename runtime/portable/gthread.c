@@ -33,6 +33,13 @@ static volatile uint32_t g_next_ticket, g_now_serving;
 #define QUANTUM_NS 1000000ull
 #define GAME_QUANTUM_NS 50000000ull
 static RT_TLS uint64_t t_quantum_ns;
+/* Behind the loading screen the drawing thread's turn is short. The game loads through worker
+ * threads that each poll for work and yield (SwitchToThread) when there is none, while the drawing
+ * thread keeps rendering the world behind the loading screen: every hand-off between them waited
+ * out the rest of a 50 ms turn. (A 2 ms turn throughout cost a third of the frame rate in the
+ * world, so it is only for the loading screen.) */
+#define LOADING_QUANTUM_NS 2000000ull
+static volatile uint32_t g_loading;
 /* The game thread waits for its turn: other threads take no new ticket meanwhile, so it waits out
  * only those already queued, not every thread that wakes from a Sleep while it waits (a dozen
  * sound threads looping Sleep, each a turn ahead of the game's frame, every frame). */
@@ -101,10 +108,13 @@ void gt_lock(void)
         uint64_t now = rt_monotonic_ns(), end = g_deadline;
         if (now >= end || t_urgent)
         {
-            /* asked again each millisecond while urgent: a holder may have cleared the request
-             * before this thread was counted as waiting */
+            /* asked again each millisecond: a holder may have cleared the request before this
+             * thread was counted as waiting, or a new holder clears it as it takes the lock (the
+             * request was raised against the previous holder's deadline). Parked for good after
+             * one request, a waiter could leave a thread running guest code with the lock for
+             * seconds. */
             rt_lock_contended = 1;
-            plat_wait32_ms(&g_now_serving, cur, t_urgent ? 1 : ~0u);
+            plat_wait32_ms(&g_now_serving, cur, 1);
         }
         else
             plat_wait32_ms(&g_now_serving, cur, (uint32_t)((end - now + 999999) / 1000000));
@@ -119,7 +129,10 @@ void gt_lock(void)
     t_acquired = rt_monotonic_ns();
     if (wait_t0)
         g_game_wait_ns += t_acquired - wait_t0;
-    g_deadline = t_acquired + (game_now() && t_quantum_ns ? t_quantum_ns : QUANTUM_NS);
+    uint64_t quantum = QUANTUM_NS;
+    if (game_now() && t_quantum_ns)
+        quantum = g_loading ? LOADING_QUANTUM_NS : t_quantum_ns;
+    g_deadline = t_acquired + quantum;
     rt_lock_contended = g_urgent > (t_urgent ? 1u : 0u);
 }
 
@@ -142,6 +155,9 @@ void gt_lock_urgent(void)
     t_urgent = 0;
     plat_atomic_add32(&g_urgent, (uint32_t)-1);
 }
+
+void gt_set_loading(int on) { g_loading = on != 0; }
+int gt_loading(void) { return (int)g_loading; }
 
 int gt_holds(void)
 {
