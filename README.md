@@ -6,6 +6,8 @@ server you choose, and lives alongside retail FFXIV without touching it.
 
 **Community:** questions, testing and news on the [XIVLegacy Discord](https://discord.gg/D9k3khqvy8).
 
+**A passion project.** XIVLegacy preserves FINAL FANTASY XIV as it was in 1.0 so people can walk through it again — and seeing the original up close may help explain why Square Enix rebuilt it as *A Realm Reborn*. If you enjoy old Eorzea, please play the game today: FINAL FANTASY XIV has a [free trial](https://freetrial.finalfantasyxiv.com/) with no time limit.
+
 For private servers only, such as
 [XIVLegacy Server](https://github.com/tagban/xivlegacy-server). This project
 ships no Square Enix files: you supply the game, or let the installer fetch
