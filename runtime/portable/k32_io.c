@@ -12,6 +12,7 @@
 #include "plat.h"
 #include "thunk.h"
 #include "vfs.h"
+#include "xiv_logtabs.h"
 
 #define INVALID_HANDLE 0xFFFFFFFFu
 #define ERROR_FILE_NOT_FOUND 2u
@@ -176,6 +177,7 @@ static void sh_GlobalMemoryStatus(Guest* g)
 
 static void file_close(void* f)
 {
+    xiv_logtabs_closed(f);
     plat_file_close((PlatFile*)f);
 }
 
@@ -226,6 +228,8 @@ static void sh_CreateFileA(Guest* g)
         trace_miss("CreateFileA", ARGS(0));
         RET(INVALID_HANDLE, 7);
     }
+    if (!(access & GENERIC_WRITE))
+        xiv_logtabs_opened(ARGS(0), host, f);
     uint32_t h = k_new(K_FILE, f, file_close);
     gt_set_error((disp == 2 || disp == 4) && existed ? ERROR_ALREADY_EXISTS : 0);
     {
@@ -256,6 +260,7 @@ static void sh_ReadFile(Guest* g)
     int64_t got = plat_file_read(f, GUEST_PTR(ARG(1)), n);
     gt_note_read(rt_monotonic_ns() - read_t0, got > 0 ? (uint64_t)got : 0);
     gt_lock();
+    xiv_logtabs_read(f, -1, (uint8_t*)GUEST_PTR(ARG(1)), got);
     if (out)
         wr32(out, got > 0 ? (uint32_t)got : 0);
     if (got < 0)
@@ -894,9 +899,10 @@ static void sh_MapViewOfFile(Guest* g)
     gt_unlock();
     int64_t at = plat_file_seek(m->file, 0, 1);
     plat_file_seek(m->file, off, 0);
-    plat_file_read(m->file, GUEST_PTR(v), n);
+    int64_t got = plat_file_read(m->file, GUEST_PTR(v), n);
     plat_file_seek(m->file, at, 0);
     gt_lock();
+    xiv_logtabs_read(m->file, off, (uint8_t*)GUEST_PTR(v), got);
     for (int i = 0; i < 64; ++i)
         if (!g_views[i])
         {

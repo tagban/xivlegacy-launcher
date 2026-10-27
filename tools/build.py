@@ -32,7 +32,7 @@ RUNTIME = ['runtime/runtime.c', 'runtime/portable/plat_posix.c', 'runtime/portab
            'runtime/portable/thunk.c', 'runtime/portable/pe.c', 'runtime/portable/k32.c', 'runtime/portable/vfs.c',
            'runtime/portable/kobj.c', 'runtime/portable/k32_io.c', 'runtime/portable/reg.c', 'runtime/portable/ole.c',
            'runtime/portable/k32_misc.c', 'runtime/portable/user32.c',
-           'runtime/portable/input.c', 'runtime/portable/xiv_k32.c', 'runtime/portable/sqex_args.c', 'runtime/portable/xiv_misc.c', 'runtime/portable/dinput.c', 'runtime/portable/ws2.c', 'runtime/portable/d3d9.c', 'runtime/portable/d3dx9.c', 'runtime/portable/xiv_fiber.c', 'runtime/portable/xiv_net.c', 'runtime/portable/xaudio2.c', 'runtime/portable/xiv_boot.c', 'runtime/portable/xiv_icon.c']
+           'runtime/portable/input.c', 'runtime/portable/xiv_k32.c', 'runtime/portable/sqex_args.c', 'runtime/portable/xiv_misc.c', 'runtime/portable/dinput.c', 'runtime/portable/ws2.c', 'runtime/portable/d3d9.c', 'runtime/portable/d3dx9.c', 'runtime/portable/xiv_fiber.c', 'runtime/portable/xiv_net.c', 'runtime/portable/xaudio2.c', 'runtime/portable/xiv_boot.c', 'runtime/portable/xiv_icon.c', 'runtime/portable/xiv_logtabs.c']
 BOOT_ONLY = []
 SDL = '/opt/homebrew'  # SDL3 from Homebrew
 # For a release, SDL's own macOS framework (SDL3-<v>.dmg: SDL3.xcframework/macos-arm64_x86_64, the folder
