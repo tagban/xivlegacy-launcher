@@ -1569,6 +1569,7 @@ static void present(void)
         gt_mark_game_thread();
     }
     xiv_game_log_poll();
+    xiv_loading_poll();
     /* XIVLEGACY_FRAMESTATS: draws and clears per frame, every 60 frames */
     {
         static int on = -1;

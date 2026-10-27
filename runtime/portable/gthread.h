@@ -39,6 +39,10 @@ uint64_t gt_other_held_ns(void);
 void gt_game_costs(uint64_t* wait_ns, uint64_t* read_ns, uint64_t* read_bytes);
 void gt_note_read(uint64_t ns, uint64_t bytes);
 int gt_holds(void);
+/* While the game shows its loading screen (xiv_loading_poll), loading comes first: the drawing
+ * thread's turn with the guest lock is short. */
+void gt_set_loading(int on);
+int gt_loading(void);
 
 /* Fibers (xiv_fiber.c): the guest lock and the running guest thread pass from one host thread to
  * another with each SwitchToFiber. gt_fiber_leave gives both up without unlocking; the host

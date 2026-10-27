@@ -7,7 +7,9 @@
 
 #include "gthread.h"
 #include "gwin.h"
+#include "k32.h"
 #include "pe.h"
+#include "plat.h"
 #include "runtime.h"
 #include "thunk.h"
 
@@ -449,6 +451,68 @@ static void hook_streamlog(Guest* g)
         line[len] = 0;
         rt_log("[game] %s\n", line);
         len = 0;
+    }
+}
+
+/* The loading screen. The game's "Now Loading" widget (\system\common\NowLoading.form, built at
+ * 0x56A4A0, vtable 0xFA588C) hangs off the app: [0x13232B8] + 0x34 is the object the main loop
+ * ticks, its +0x64 the UI manager, whose +0x10 + 0x175A4 holds the widget. The widget's byte at
+ * +0x229 is set while the screen is up (character list, character select to the world, zone
+ * changes) and cleared as it fades out.
+ *
+ * Behind it, loading is all that matters, and the game is slow at it: the world loads through the
+ * main loop's ticks (its frame limiter at 0xCC6D00 sleeps out a 30 fps frame) and worker threads
+ * that poll and yield, while the drawing thread renders the hidden world at full speed and holds
+ * the guest lock most of the time. So while the screen is up the drawing thread naps each frame, its
+ * turn with the lock is short (gt_set_loading), workers yield without napping (SwitchToThread) and
+ * the main loop does not sleep out its frame. Character select to the world: 42 s -> 12 s. */
+#define LOADING_NAP_MS 30u
+static uint32_t loading_widget(void)
+{
+    static uint32_t widget;
+    if (widget && rd32(widget) == 0xFA588Cu)
+        return widget;
+    widget = 0;
+    uint32_t p = 0x13232B8u;
+    static const uint32_t steps[] = { 0x34u + 0x64u, 0x10u + 0x175A4u };
+    p = rd32(p);
+    for (unsigned i = 0; i < 2 && p; ++i)
+        p = gwin_is_committed(p + steps[i]) ? rd32(p + steps[i]) : 0;
+    if (p && gwin_is_committed(p) && rd32(p) == 0xFA588Cu)
+        widget = p;
+    return widget;
+}
+
+static uint32_t loading_sleep_filter(uint32_t site, uint32_t ms)
+{
+    /* the main loop's frame limiter (0xCC6D00) */
+    return site == 0x00CC6D4Cu && ms > 1 && gt_loading() ? 1 : ms;
+}
+
+void xiv_loading_poll(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        on = getenv("XIVLEGACY_SLOW_LOADING") == NULL; /* the game's own pace, to compare */
+        if (on)
+            k32_sleep_filter = loading_sleep_filter;
+    }
+    if (!on)
+        return;
+    uint32_t w = loading_widget();
+    int loading = w && GUEST_PTR(w)[0x229] != 0;
+    if (loading != gt_loading())
+    {
+        gt_set_loading(loading);
+        if (getenv("XIVLEGACY_LOADINGLOG"))
+            rt_log("[loading] %s\n", loading ? "screen up" : "screen down");
+    }
+    if (loading)
+    {
+        gt_unlock();
+        plat_sleep_ms(LOADING_NAP_MS);
+        gt_lock();
     }
 }
 

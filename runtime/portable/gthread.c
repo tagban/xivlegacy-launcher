@@ -33,16 +33,13 @@ static volatile uint32_t g_next_ticket, g_now_serving;
 #define QUANTUM_NS 1000000ull
 #define GAME_QUANTUM_NS 50000000ull
 static RT_TLS uint64_t t_quantum_ns;
-/* While the game streams files in (a loading screen, a zone change), the drawing thread's turn is
- * short. The game loads through a chain of worker threads that each poll for work and yield
- * (SwitchToThread) when there is none, and the drawing thread keeps rendering the world behind the
- * loading screen: every hand-off in the chain waited out the rest of a 50 ms turn. Character select
- * to the world took 45 s, 27 s with 2 ms turns. Rendering in the world with 2 ms turns ran at 33 fps
- * against 50, so the long turn comes back 3 s after other threads stop reading files steadily (the
- * end of a load reads only a few files a second). */
-#define STREAMING_QUANTUM_NS 2000000ull
-#define STREAMING_NS 3000000000ull
-static volatile uint64_t g_streamed;
+/* Behind the loading screen the drawing thread's turn is short. The game loads through worker
+ * threads that each poll for work and yield (SwitchToThread) when there is none, while the drawing
+ * thread keeps rendering the world behind the loading screen: every hand-off between them waited
+ * out the rest of a 50 ms turn. (A 2 ms turn throughout cost a third of the frame rate in the
+ * world, so it is only for the loading screen.) */
+#define LOADING_QUANTUM_NS 2000000ull
+static volatile uint32_t g_loading;
 /* The game thread waits for its turn: other threads take no new ticket meanwhile, so it waits out
  * only those already queued, not every thread that wakes from a Sleep while it waits (a dozen
  * sound threads looping Sleep, each a turn ahead of the game's frame, every frame). */
@@ -84,19 +81,6 @@ void gt_note_read(uint64_t ns, uint64_t bytes)
 {
     if (game_now())
         g_game_read_ns += ns, g_game_read_bytes += bytes;
-    else
-    {
-        /* streaming: the fourth read back was within a second (in the world the game reads a
-         * file or two now and then; each switching short turns on stuttered the frame) */
-        static volatile uint64_t reads[4];
-        static volatile uint32_t next;
-        uint64_t now = rt_monotonic_ns();
-        uint32_t i = plat_atomic_add32(&next, 1) & 3u;
-        uint64_t fourth_back = reads[i];
-        reads[i] = now;
-        if (now - fourth_back < 1000000000ull)
-            g_streamed = now;
-    }
 }
 
 void gt_lock(void)
@@ -147,7 +131,7 @@ void gt_lock(void)
         g_game_wait_ns += t_acquired - wait_t0;
     uint64_t quantum = QUANTUM_NS;
     if (game_now() && t_quantum_ns)
-        quantum = t_acquired < g_streamed + STREAMING_NS ? STREAMING_QUANTUM_NS : t_quantum_ns;
+        quantum = g_loading ? LOADING_QUANTUM_NS : t_quantum_ns;
     g_deadline = t_acquired + quantum;
     rt_lock_contended = g_urgent > (t_urgent ? 1u : 0u);
 }
@@ -171,6 +155,9 @@ void gt_lock_urgent(void)
     t_urgent = 0;
     plat_atomic_add32(&g_urgent, (uint32_t)-1);
 }
+
+void gt_set_loading(int on) { g_loading = on != 0; }
+int gt_loading(void) { return (int)g_loading; }
 
 int gt_holds(void)
 {

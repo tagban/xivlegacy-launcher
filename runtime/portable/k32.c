@@ -617,9 +617,13 @@ static void sh_GetSystemTimeAsFileTime(Guest* g)
     RET(0, 1);
 }
 
+uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
+
 static void sh_Sleep(Guest* g)
 {
     uint32_t ms = ARG(0);
+    if (k32_sleep_filter)
+        ms = k32_sleep_filter(rd32(g->esp), ms);
     /* XIVLEGACY_WAITPROF: on the drawing thread, the time asked for, slept, and spent getting the
      * guest lock back, summed over 2 s (logged with the [waitprof] line) */
     int prof = thunk_timer && plat_thread_id() == thunk_prof_thread;
