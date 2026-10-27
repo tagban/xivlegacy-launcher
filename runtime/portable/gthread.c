@@ -33,6 +33,16 @@ static volatile uint32_t g_next_ticket, g_now_serving;
 #define QUANTUM_NS 1000000ull
 #define GAME_QUANTUM_NS 50000000ull
 static RT_TLS uint64_t t_quantum_ns;
+/* While the game streams files in (a loading screen, a zone change), the drawing thread's turn is
+ * short. The game loads through a chain of worker threads that each poll for work and yield
+ * (SwitchToThread) when there is none, and the drawing thread keeps rendering the world behind the
+ * loading screen: every hand-off in the chain waited out the rest of a 50 ms turn. Character select
+ * to the world took 45 s, 27 s with 2 ms turns. Rendering in the world with 2 ms turns ran at 33 fps
+ * against 50, so the long turn comes back 3 s after other threads stop reading files steadily (the
+ * end of a load reads only a few files a second). */
+#define STREAMING_QUANTUM_NS 2000000ull
+#define STREAMING_NS 3000000000ull
+static volatile uint64_t g_streamed;
 /* The game thread waits for its turn: other threads take no new ticket meanwhile, so it waits out
  * only those already queued, not every thread that wakes from a Sleep while it waits (a dozen
  * sound threads looping Sleep, each a turn ahead of the game's frame, every frame). */
@@ -74,6 +84,19 @@ void gt_note_read(uint64_t ns, uint64_t bytes)
 {
     if (game_now())
         g_game_read_ns += ns, g_game_read_bytes += bytes;
+    else
+    {
+        /* streaming: the fourth read back was within a second (in the world the game reads a
+         * file or two now and then; each switching short turns on stuttered the frame) */
+        static volatile uint64_t reads[4];
+        static volatile uint32_t next;
+        uint64_t now = rt_monotonic_ns();
+        uint32_t i = plat_atomic_add32(&next, 1) & 3u;
+        uint64_t fourth_back = reads[i];
+        reads[i] = now;
+        if (now - fourth_back < 1000000000ull)
+            g_streamed = now;
+    }
 }
 
 void gt_lock(void)
@@ -101,10 +124,13 @@ void gt_lock(void)
         uint64_t now = rt_monotonic_ns(), end = g_deadline;
         if (now >= end || t_urgent)
         {
-            /* asked again each millisecond while urgent: a holder may have cleared the request
-             * before this thread was counted as waiting */
+            /* asked again each millisecond: a holder may have cleared the request before this
+             * thread was counted as waiting, or a new holder clears it as it takes the lock (the
+             * request was raised against the previous holder's deadline). Parked for good after
+             * one request, a waiter could leave a thread running guest code with the lock for
+             * seconds. */
             rt_lock_contended = 1;
-            plat_wait32_ms(&g_now_serving, cur, t_urgent ? 1 : ~0u);
+            plat_wait32_ms(&g_now_serving, cur, 1);
         }
         else
             plat_wait32_ms(&g_now_serving, cur, (uint32_t)((end - now + 999999) / 1000000));
@@ -119,7 +145,10 @@ void gt_lock(void)
     t_acquired = rt_monotonic_ns();
     if (wait_t0)
         g_game_wait_ns += t_acquired - wait_t0;
-    g_deadline = t_acquired + (game_now() && t_quantum_ns ? t_quantum_ns : QUANTUM_NS);
+    uint64_t quantum = QUANTUM_NS;
+    if (game_now() && t_quantum_ns)
+        quantum = t_acquired < g_streamed + STREAMING_NS ? STREAMING_QUANTUM_NS : t_quantum_ns;
+    g_deadline = t_acquired + quantum;
     rt_lock_contended = g_urgent > (t_urgent ? 1u : 0u);
 }
 

@@ -307,6 +307,26 @@ static void sh_listen(Guest* g)
     RET(0, 2);
 }
 
+/* waits up to ms (without the guest lock) for a connect in progress: 1 once it has connected */
+static int connect_settles(host_sock h, unsigned ms)
+{
+    fd_set wr, ex;
+    FD_ZERO(&wr);
+    FD_ZERO(&ex);
+    FD_SET(h, &wr);
+    FD_SET(h, &ex);
+    struct timeval tv = { (long)(ms / 1000u), (int)(ms % 1000u * 1000u) };
+    gt_unlock();
+    int n = select((int)h + 1, NULL, &wr, &ex, &tv);
+    gt_lock();
+    if (n <= 0 || !FD_ISSET(h, &wr))
+        return 0;
+    int err = 0;
+    socklen_t len = sizeof err;
+    getsockopt(h, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
+    return err == 0;
+}
+
 static void sh_connect(Guest* g)
 {
     Sock* s = sock(ARG(0));
@@ -325,6 +345,14 @@ static void sh_connect(Guest* g)
     int e = host_errno();
     if (!nb)
         gt_lock();
+    /* A nonblocking connect that completes within a moment is reported as done at once, as a
+     * blocking one would be. FFXIV 1.23b tries its lobby hello right after connecting; finding the
+     * socket still connecting, it arms a 5 s retry (its next select, half a second later, sees the
+     * connection): 5 s idle on each lobby connection. The game takes connect's 0 as a blocking
+     * success: connected, and the hello goes out on its next network turn. Not for sockets under
+     * WSAEventSelect, which wait for FD_CONNECT. */
+    if (r != 0 && nb && !s->mask && wsa_error(e) == WSAEWOULDBLOCK && connect_settles(s->h, 250))
+        r = 0;
     if (r != 0)
     {
         gt_set_error(wsa_error(e));
