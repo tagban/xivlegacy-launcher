@@ -8,7 +8,11 @@
 set -euo pipefail
 app=$1 out=$2
 tmp=$(mktemp -d)
-ditto -c -k --keepParent "$app" "$tmp/submit.zip"
+# no extended attributes in the zips: ditto stores them as "._" AppleDouble entries, which
+# Finder's Archive Utility turns back into attributes but other unzippers write out as files,
+# and stray "._" files inside the app break its code seal ("unsealed contents")
+zip_app() { ditto -c -k --norsrc --noextattr --noqtn --keepParent "$1" "$2"; }
+zip_app "$app" "$tmp/submit.zip"
 if [ -n "${APPLE_API_KEY_PATH:-}" ]; then
   auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
 else
@@ -23,6 +27,6 @@ grep -q "status: Accepted" "$tmp/result.txt" || {
 xcrun stapler staple "$app"
 spctl --assess --type execute --verbose=2 "$app"
 mkdir -p "$(dirname "$out")"
-ditto -c -k --keepParent "$app" "$out"
+zip_app "$app" "$out"
 rm -rf "$tmp"
 echo "notarized: $out"
