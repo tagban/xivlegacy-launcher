@@ -57,6 +57,61 @@ static void pad_guid(int i, uint8_t out[16])
     memcpy(out, g, 16);
 }
 
+/* --- config.pad ----------------------------------------------------------------------------------
+ * FINAL FANTASY XIV Config (ffxivconfig.exe) saves the gamepad settings as 0x148 bytes in
+ * Documents\My Games\FINAL FANTASY XIV\config.pad, and the game ignores every gamepad until the
+ * file names one. Retail players ran that tool once; ours never do, so we write the file ourselves:
+ *   0x00 version 0x20100211
+ *   0x04 the device's guidInstance, 0x14 its guidProduct (both must match an enumerated device)
+ *   0x24 read the pad while the window is in the background
+ *   0x28 stick dead zone, 0..5 (the tool's default 2)
+ *   0x2C 24 bytes, one per pad function, in the tool's order: D-pad up/down/left/right, left
+ *        stick up/down/left/right, right stick the same, face top/right/bottom/left, L1, L2, L3,
+ *        R1, R2, R3, Start, Select. Each is the source the game reads (-1 none): 0..31 a button,
+ *        32 + 2 * axis a half axis (+1 for the positive half).
+ *   0x44 vibration
+ * An XInput pad's sources (the game reads XInputGetState): buttons Start, Back, L3, R3, LB, RB,
+ * A, B, X, Y; axes D-pad x, D-pad y, left x, left y, right x, right y, LT, RT, with y down. */
+#define PAD_CONFIG_SIZE 0x148
+#define HALF_AXIS(a, positive) (32 + 2 * (a) + (positive))
+
+void dinput_default_pad_config(const char* host_path)
+{
+    FILE* f = fopen(host_path, "rb");
+    if (f)
+    {
+        fclose(f);
+        return;
+    }
+    enum { START, BACK, L3, R3, LB, RB, A, B, X, Y };
+    enum { DPAD_X, DPAD_Y, LEFT_X, LEFT_Y, RIGHT_X, RIGHT_Y, LT, RT };
+    static const uint8_t MAP[24] = {
+        HALF_AXIS(DPAD_Y, 0), HALF_AXIS(DPAD_Y, 1), HALF_AXIS(DPAD_X, 0), HALF_AXIS(DPAD_X, 1),
+        HALF_AXIS(LEFT_Y, 0), HALF_AXIS(LEFT_Y, 1), HALF_AXIS(LEFT_X, 0), HALF_AXIS(LEFT_X, 1),
+        HALF_AXIS(RIGHT_Y, 0), HALF_AXIS(RIGHT_Y, 1), HALF_AXIS(RIGHT_X, 0), HALF_AXIS(RIGHT_X, 1),
+        Y, B, A, X,
+        LB, HALF_AXIS(LT, 1), L3,
+        RB, HALF_AXIS(RT, 1), R3,
+        START, BACK,
+    };
+    static const uint8_t XBOX360[16] = GUIDB(0x028E045E, 0, 0, 0, 0, 0x50, 0x49, 0x44, 0x56, 0x49, 0x44);
+    uint8_t cfg[PAD_CONFIG_SIZE] = { 0 };
+    const uint32_t version = 0x20100211u, dead_zone = 2, vibration = 1;
+    memcpy(cfg, &version, 4);
+    pad_guid(0, cfg + 0x04);
+    memcpy(cfg + 0x14, XBOX360, 16);
+    memcpy(cfg + 0x28, &dead_zone, 4);
+    memcpy(cfg + 0x2C, MAP, sizeof MAP);
+    memcpy(cfg + 0x44, &vibration, 4);
+    f = fopen(host_path, "wb");
+    if (!f || fwrite(cfg, 1, sizeof cfg, f) != sizeof cfg)
+        rt_log("[recomp] input: cannot write the gamepad settings %s\n", host_path);
+    else
+        rt_log("[recomp] input: wrote default gamepad settings %s\n", host_path);
+    if (f)
+        fclose(f);
+}
+
 /* the gamepad's objects: 5 axes, 1 POV, 10 buttons (the Xbox controller's DirectInput view) */
 #define PAD_AXES 5
 #define PAD_BUTTONS 10

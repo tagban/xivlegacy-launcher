@@ -88,6 +88,12 @@ int xiv_boot_prepare(int* argcp, char** argv)
         plat_mkdir(d);
     }
     vfs_mount(USER_DIR, user);
+    snprintf(d, sizeof d, "%s/Documents/My Games", user);
+    plat_mkdir(d);
+    snprintf(d, sizeof d, "%s/Documents/My Games/FINAL FANTASY XIV", user);
+    plat_mkdir(d);
+    snprintf(d, sizeof d, "%s/Documents/My Games/FINAL FANTASY XIV/config.pad", user);
+    dinput_default_pad_config(d);
     snprintf(d, sizeof d, "%s/ProgramData", user);
     vfs_mount("C:\\ProgramData", d);
     k32_init(GAME_DIR, GAME_DIR "\\ffxivgame.exe");
