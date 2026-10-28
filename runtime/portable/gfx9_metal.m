@@ -2041,6 +2041,62 @@ static void save_png(G9Tex* bb, const char* path)
     free(px);
 }
 
+/* XIVLEGACY_VISLOG: each presented frame copied to the CPU without a stall, shrunk to 64x36, and how
+ * much it changed from the frame before logged with the time (when the screen answers input) */
+#define VIS_W 64
+#define VIS_H 36
+static void vislog(G9Tex* bb)
+{
+    static int on = -1;
+    static id<MTLBuffer> bufs[4];
+    static uint8_t prev[VIS_W * VIS_H * 3];
+    static int have_prev;
+    if (on < 0)
+        on = getenv("XIVLEGACY_VISLOG") != NULL;
+    if (!on || !bb || !bb->tex || bb->pf != MTLPixelFormatBGRA8Unorm || !g_cmd)
+        return;
+    uint32_t w = bb->w, h = bb->h;
+    int slot = (int)(g_frame & 3);
+    if (!bufs[slot] || [bufs[slot] length] < (NSUInteger)w * h * 4)
+    {
+        [bufs[slot] release];
+        bufs[slot] = [g_dev newBufferWithLength:(NSUInteger)w * h * 4 options:MTLResourceStorageModeShared];
+    }
+    end_encoder();
+    id<MTLBlitCommandEncoder> b = [g_cmd blitCommandEncoder];
+    [b copyFromTexture:bb->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
+              toBuffer:bufs[slot] destinationOffset:0 destinationBytesPerRow:w * 4 destinationBytesPerImage:(NSUInteger)w * h * 4];
+    [b endEncoding];
+    id<MTLBuffer> buf = bufs[slot];
+    unsigned long long frame = g_frame;
+    double t = (double)rt_monotonic_ns() * 1e-9;
+    [g_cmd addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        (void)cb;
+        const uint8_t* px = (const uint8_t*)[buf contents];
+        uint8_t th[VIS_W * VIS_H * 3];
+        double diff = 0;
+        for (int y = 0; y < VIS_H; ++y)
+            for (int x = 0; x < VIS_W; ++x)
+            {
+                unsigned r = 0, g2 = 0, bl = 0;
+                for (int sy = 0; sy < 4; ++sy)
+                    for (int sx = 0; sx < 4; ++sx)
+                    {
+                        const uint8_t* q = px + ((size_t)(y * h / VIS_H + sy * h / VIS_H / 4) * w + (size_t)(x * w / VIS_W + sx * w / VIS_W / 4)) * 4;
+                        bl += q[0], g2 += q[1], r += q[2];
+                    }
+                uint8_t* o = th + (y * VIS_W + x) * 3;
+                o[0] = (uint8_t)(r / 16), o[1] = (uint8_t)(g2 / 16), o[2] = (uint8_t)(bl / 16);
+            }
+        if (have_prev)
+            for (int i = 0; i < VIS_W * VIS_H * 3; ++i)
+                diff += abs((int)th[i] - (int)prev[i]);
+        memcpy(prev, th, sizeof th);
+        have_prev = 1;
+        rt_log("[vis] frame %llu t %.3f diff %.2f\n", frame, t, diff / (VIS_W * VIS_H * 3));
+    }];
+}
+
 void g9_present(G9Tex* bb)
 {
     if (g_trace)
@@ -2084,6 +2140,7 @@ void g9_present(G9Tex* bb)
                 [g_cmd presentDrawable:drawable];
             }
         }
+        vislog(bb);
         commit(0);
         if (g_frame == 1 || g_frame % 1024 == 0)
             rt_log("[gfx9] frame %llu: %llu draws drawn, %llu skipped so far\n", (unsigned long long)g_frame,

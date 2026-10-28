@@ -1,4 +1,5 @@
 /* Guest threads, the guest lock, host->guest calls. See gthread.h. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #if defined(_MSC_VER)
@@ -77,14 +78,51 @@ static inline void cpu_relax(void)
 static volatile uint32_t g_waiters, g_urgent;
 static volatile uint64_t g_deadline;
 
+static volatile uint64_t g_other_read;
 void gt_note_read(uint64_t ns, uint64_t bytes)
 {
     if (game_now())
         g_game_read_ns += ns, g_game_read_bytes += bytes;
+    else
+        g_other_read = rt_monotonic_ns();
+}
+uint64_t gt_last_read_ns(void) { return g_other_read; }
+
+/* XIVLEGACY_LOCKSTATS: every 2 s, per thread, how long it held the lock, waited for it, and how many
+ * times it took it (who starves whom) */
+static uint32_t ls_tid[64];
+static uint64_t ls_wait[64], ls_hold[64], ls_n[64], ls_last;
+static RT_TLS int ls_slot = -1;
+static RT_TLS uint64_t ls_t0;
+static void ls_note(int wait, uint64_t ns)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("XIVLEGACY_LOCKSTATS") != NULL;
+    if (!on) return;
+    if (ls_slot < 0)
+    {
+        uint32_t tid = plat_thread_id();
+        for (int i = 0; i < 64; ++i)
+            if (plat_atomic_cas32(&ls_tid[i], 0, tid) == 0) { ls_slot = i; break; }
+        if (ls_slot < 0) return;
+    }
+    if (wait) ls_wait[ls_slot] += ns, ls_n[ls_slot]++; else ls_hold[ls_slot] += ns;
+    uint64_t now = rt_monotonic_ns();
+    if (!wait && now - ls_last > 2000000000ull)
+    {
+        ls_last = now;
+        char line[4096]; int o = snprintf(line, sizeof line, "[lockstats] t %.3f", now * 1e-9);
+        for (int i = 0; i < 64 && o < 3900; ++i)
+            if (ls_tid[i] && (ls_wait[i] > 20000000ull || ls_hold[i] > 20000000ull))
+                o += snprintf(line + o, sizeof line - o, " %u%s:w%.0f/h%.0f/n%llu", ls_tid[i], i == ls_slot ? "*" : "", ls_wait[i] * 1e-6, ls_hold[i] * 1e-6, (unsigned long long)ls_n[i]);
+        for (int i = 0; i < 64; ++i) ls_wait[i] = ls_hold[i] = ls_n[i] = 0;
+        rt_log("%s\n", line);
+    }
 }
 
 void gt_lock(void)
 {
+    ls_t0 = rt_monotonic_ns();
     uint64_t wait_t0 = game_now() ? rt_monotonic_ns() : 0;
     plat_atomic_add32(&g_waiters, 1);
     if (!game_now())
@@ -127,6 +165,7 @@ void gt_lock(void)
     plat_atomic_add32(&g_waiters, (uint32_t)-1);
     t_held = 1;
     t_acquired = rt_monotonic_ns();
+    ls_note(1, t_acquired - ls_t0);
     if (wait_t0)
         g_game_wait_ns += t_acquired - wait_t0;
     uint64_t quantum = QUANTUM_NS;
@@ -138,6 +177,7 @@ void gt_lock(void)
 
 void gt_unlock(void)
 {
+    if (t_acquired) ls_note(0, rt_monotonic_ns() - t_acquired);
     if (!game_now() && t_acquired)
         g_other_held_ns += rt_monotonic_ns() - t_acquired; /* still held: no other writer */
     t_held = 0;
