@@ -655,6 +655,10 @@ static void control_thread(void* arg)
                 plat_sleep_ms((uint32_t)atoi(line + 6));
                 gt_unlock();
             }
+            else if (!strncmp(line, "par ", 4))
+                gt_set_parallel_main(atoi(line + 4)); /* par 0|1: the main loop beside the guest lock (XIVLEGACY_PARALLEL) */
+            else if (!strncmp(line, "mark ", 5))
+                rt_log("[mark] %s\n", line + 5);
             else if (!strcmp(line, "findnan"))
                 find_nans();
             else if (!strncmp(line, "type ", 5))

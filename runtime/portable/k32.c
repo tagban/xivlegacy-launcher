@@ -280,23 +280,22 @@ static void sh_GetCurrentProcessId(Guest* g) { RET(0x1000u, 0); }
 
 /* --- critical sections --------------------------------------------------------------------------
  * The CRITICAL_SECTION stays in guest memory with its Win32 layout (+8 RecursionCount,
- * +12 OwningThread). Guest code runs one thread at a time, so taking a free section needs no
- * atomics; a thread that must wait releases the guest lock and sleeps on g_cs_epoch, which every
- * release of a contended section advances. */
+ * +12 OwningThread). Taking a free section is one atomic compare-and-swap of the owner, so these
+ * run without the runtime lock (thunk.c) and order the guest's data as on x86; a thread that must
+ * wait releases its locks and sleeps on g_cs_epoch, which a release advances while anyone waits. */
 static volatile uint32_t g_cs_epoch, g_cs_waiters;
 
 static int cs_try(uint32_t cs, uint32_t tid)
 {
-    uint32_t owner = rd32(cs + 12);
+    uint32_t owner = rt_cmpxchg32(cs + 12, 0, tid);
     if (!owner)
     {
-        wr32(cs + 12, tid);
         wr32(cs + 8, 1);
         return 1;
     }
     if (owner == tid)
     {
-        wr32(cs + 8, rd32(cs + 8) + 1);
+        wr32(cs + 8, rd32(cs + 8) + 1); /* only the owner writes the count */
         return 1;
     }
     return 0;
@@ -321,14 +320,30 @@ static void sh_DeleteCriticalSection(Guest* g) { RET(0, 1); }
 static void sh_EnterCriticalSection(Guest* g)
 {
     uint32_t cs = ARG(0), tid = gt_self()->tid;
-    while (!cs_try(cs, tid))
+    for (unsigned spin = 0; !cs_try(cs, tid); ++spin)
     {
+        if (spin < 100 && gt_parallel())
+        {
+#if defined(__aarch64__)
+            __asm__ __volatile__("yield"); /* its owner may be running on another core: a short spin first */
+#elif defined(__x86_64__) || defined(__i386__)
+            __asm__ __volatile__("pause");
+#endif
+            continue;
+        }
         uint32_t e = g_cs_epoch;
-        g_cs_waiters++;
+        plat_atomic_add32(&g_cs_waiters, 1);
+        /* counted as waiting before the second look: a release either sees the count or left the
+         * section free for this look */
+        if (cs_try(cs, tid))
+        {
+            plat_atomic_add32(&g_cs_waiters, (uint32_t)-1);
+            break;
+        }
         gt_unlock();
-        plat_wait32(&g_cs_epoch, e);
+        plat_wait32_ms(&g_cs_epoch, e, 10);
         gt_lock();
-        g_cs_waiters--;
+        plat_atomic_add32(&g_cs_waiters, (uint32_t)-1);
     }
     RET(0, 1);
 }
@@ -343,29 +358,22 @@ static void sh_LeaveCriticalSection(Guest* g)
     else
     {
         wr32(cs + 8, 0);
-        wr32(cs + 12, 0);
+        rt_xchg32(cs + 12, 0); /* a full barrier: the section's writes before the release */
         if (g_cs_waiters)
         {
-            g_cs_epoch++;
+            plat_atomic_add32(&g_cs_epoch, 1);
             plat_wake_all32(&g_cs_epoch);
         }
     }
     RET(0, 1);
 }
 
-/* --- interlocked: guest code holds the guest lock, so plain read-modify-write is atomic ------- */
-static void sh_InterlockedIncrement(Guest* g) { uint32_t v = rd32(ARG(0)) + 1; wr32(ARG(0), v); RET(v, 1); }
-static void sh_InterlockedDecrement(Guest* g) { uint32_t v = rd32(ARG(0)) - 1; wr32(ARG(0), v); RET(v, 1); }
-static void sh_InterlockedExchange(Guest* g) { uint32_t o = rd32(ARG(0)); wr32(ARG(0), ARG(1)); RET(o, 2); }
-static void sh_InterlockedExchangeAdd(Guest* g) { uint32_t o = rd32(ARG(0)); wr32(ARG(0), o + ARG(1)); RET(o, 2); }
-
-static void sh_InterlockedCompareExchange(Guest* g)
-{
-    uint32_t o = rd32(ARG(0));
-    if (o == ARG(2))
-        wr32(ARG(0), ARG(1));
-    RET(o, 3);
-}
+/* --- interlocked: atomic, for guest threads that run at once (XIVLEGACY_PARALLEL); guest.h ----- */
+static void sh_InterlockedIncrement(Guest* g) { RET(rt_xadd32(ARG(0), 1) + 1, 1); }
+static void sh_InterlockedDecrement(Guest* g) { RET(rt_xadd32(ARG(0), (uint32_t)-1) - 1, 1); }
+static void sh_InterlockedExchange(Guest* g) { RET(rt_xchg32(ARG(0), ARG(1)), 2); }
+static void sh_InterlockedExchangeAdd(Guest* g) { RET(rt_xadd32(ARG(0), ARG(1)), 2); }
+static void sh_InterlockedCompareExchange(Guest* g) { RET(rt_cmpxchg32(ARG(0), ARG(2), ARG(1)), 3); }
 
 /* --- code pages and character types: Windows-1252 ----------------------------------------------
  * Bytes map to the code points of the same value (1252's 0x80-0x9F punctuation is not

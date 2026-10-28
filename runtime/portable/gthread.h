@@ -17,6 +17,7 @@ typedef struct GThread
     uint32_t stack_lo, stack_hi, teb;
     uint32_t tid;
     uint32_t tls[GT_TLS_SLOTS];
+    int par; /* runs beside the guest lock (XIVLEGACY_PARALLEL) */
 } GThread;
 
 /* This thread's guest state, created on first use (the caller holds the guest lock). */
@@ -41,6 +42,20 @@ uint64_t gt_other_held_ns(void);
 void gt_game_costs(uint64_t* wait_ns, uint64_t* read_ns, uint64_t* read_bytes);
 void gt_note_read(uint64_t ns, uint64_t bytes);
 int gt_holds(void);
+/* XIVLEGACY_PARALLEL=1 (gthread.c): the main loop runs translated code beside the guest lock, and
+ * runtime code takes the runtime lock. gt_shim_enter/leave bracket a shim; gt_guest_begin starts
+ * translated code on a host thread that holds the runtime lock (a fiber's first run). */
+int gt_parallel(void);
+unsigned gt_shim_enter(void);
+void gt_shim_leave(unsigned saved);
+void gt_guest_begin(void);
+/* this thread runs beside the guest lock; a Direct3D device call there takes it (thunk.c) */
+int gt_beside(void);
+void gt_device_enter(void);
+void gt_device_leave(void);
+/* with XIVLEGACY_PARALLEL: 0 puts the main loop back under the guest lock, 1 beside it again (A/B tests) */
+void gt_set_parallel_main(int on);
+void gt_rt_costs(uint64_t* game_wait_ns, uint64_t* other_wait_ns, uint64_t* game_takes);
 /* While the game shows its loading screen (xiv_loading_poll), loading comes first: the drawing
  * thread's turn with the guest lock is short. */
 void gt_set_loading(int on);

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gthread.h"
 #include "plat.h"
 #include "thunk.h"
 
@@ -17,6 +18,7 @@ typedef struct Thunk
 {
     char name[96]; /* DLL!name */
     Shim shim;
+    uint8_t lock_class; /* XIVLEGACY_PARALLEL: what the shim needs held (lock_class_for) */
     uint64_t prof_ns, prof_calls; /* the game thread's time in it since the last report */
     uint32_t calls;               /* XIVLEGACY_RECOMP_FIRSTCALLS */
 } Thunk;
@@ -51,6 +53,45 @@ Shim thunk_find_shim(const char* dll, const char* name)
     return find_shim(dll, name);
 }
 
+/* XIVLEGACY_PARALLEL: a shim runs with the runtime lock (gthread.c) unless it is one of these.
+ * The drawing thread calls shims about 1.5 million times a second (shader constants, D3DPERF
+ * markers, critical sections), and the main loop's thread calls the same critical sections: through
+ * one lock, its cache line went back and forth between the cores at each call. */
+enum { LOCK_RUNTIME, LOCK_NONE, LOCK_DEVICE };
+static uint8_t lock_class_for(const char* name)
+{
+    /* self-contained: atomics, the calling thread's own state, the clock, no-ops */
+    static const char* const NONE[] = {
+        "InterlockedIncrement", "InterlockedDecrement", "InterlockedExchange", "InterlockedExchangeAdd",
+        "InterlockedCompareExchange", "EnterCriticalSection", "LeaveCriticalSection", "TryEnterCriticalSection",
+        "TlsGetValue", "TlsSetValue", "GetLastError", "SetLastError", "GetCurrentThreadId", "GetCurrentThread",
+        "GetCurrentProcess", "GetCurrentProcessId", "timeGetTime", "GetTickCount", "QueryPerformanceCounter",
+        "QueryPerformanceFrequency", "D3DPERF_BeginEvent", "D3DPERF_EndEvent", "D3DPERF_SetMarker",
+        "D3DPERF_GetStatus", NULL,
+    };
+    for (const char* const* n = NONE; *n; ++n)
+        if (!strcmp(name, *n))
+            return LOCK_NONE;
+    /* the device's per-draw state and draws: device state only (no heap, windows or handles), and
+     * Direct3D 9 leaves a device to one thread at a time; that is the guest lock's group (the
+     * drawing thread), so a thread beside it takes the guest lock for these */
+    static const char* const DEVICE[] = {
+        "SetTransform", "SetViewport", "SetMaterial", "SetLight", "LightEnable", "SetClipPlane", "SetRenderState",
+        "SetTexture", "SetTextureStageState", "SetSamplerState", "SetScissorRect", "SetVertexDeclaration", "SetFVF",
+        "SetVertexShader", "SetVertexShaderConstantF", "SetVertexShaderConstantI", "SetVertexShaderConstantB",
+        "SetStreamSource", "SetStreamSourceFreq", "SetIndices", "SetPixelShader", "SetPixelShaderConstantF",
+        "SetPixelShaderConstantI", "SetPixelShaderConstantB", "DrawPrimitive", "DrawIndexedPrimitive",
+        "DrawPrimitiveUP", "DrawIndexedPrimitiveUP", "GetRenderState", "GetTransform", "GetViewport", "GetTexture",
+        "GetSamplerState", "GetTextureStageState", "GetVertexShader", "GetPixelShader", NULL,
+    };
+    const char* m = strstr(name, "IDirect3DDevice9::");
+    if (m)
+        for (const char* const* n = DEVICE; *n; ++n)
+            if (!strcmp(m + 18, *n))
+                return LOCK_DEVICE;
+    return LOCK_RUNTIME;
+}
+
 uint32_t thunk_for(const char* dll, const char* name)
 {
     char full[96];
@@ -69,6 +110,7 @@ uint32_t thunk_for(const char* dll, const char* name)
     memset(t, 0, sizeof *t);
     strcpy(t->name, full);
     t->shim = find_shim(dll, name);
+    t->lock_class = lock_class_for(name);
     return THUNK_BASE + g_count++ * THUNK_STRIDE;
 }
 
@@ -134,8 +176,77 @@ void thunk_register_at(uint32_t addr, Shim fn)
         g_at[g_nat].addr = addr, g_at[g_nat++].fn = fn;
 }
 
+static int dispatch(Guest* g, uint32_t target);
+
 int thunk_dispatch(Guest* g, uint32_t target)
 {
+    if (!gt_parallel())
+        return dispatch(g, target);
+    /* XIVLEGACY_PARALLEL: runtime code holds the runtime lock (gthread.c), apart from the shims
+     * lock_class_for lets off */
+    if (target >= THUNK_BASE && !((target - THUNK_BASE) % THUNK_STRIDE) && (target - THUNK_BASE) / THUNK_STRIDE < g_count)
+    {
+        uint8_t c = g_thunks[(target - THUNK_BASE) / THUNK_STRIDE].lock_class;
+        if (c == LOCK_NONE || (c == LOCK_DEVICE && !gt_beside()))
+            return dispatch(g, target);
+        if (c == LOCK_DEVICE)
+        {
+            gt_device_enter();
+            int r = dispatch(g, target);
+            gt_device_leave();
+            return r;
+        }
+    }
+    unsigned saved = gt_shim_enter();
+    int r = dispatch(g, target);
+    gt_shim_leave(saved);
+    return r;
+}
+
+/* XIVLEGACY_SHIMCOUNT=1 (spike): calls per shim, the drawing thread's and the main loop's, every 5 s */
+static uint32_t g_cnt_game[THUNK_MAX], g_cnt_other[THUNK_MAX];
+static void shimcount(uint32_t target)
+{
+    static int on = -1;
+    static uint64_t last;
+    if (on < 0)
+        on = getenv("XIVLEGACY_SHIMCOUNT") != NULL;
+    if (!on || target < THUNK_BASE || (target - THUNK_BASE) % THUNK_STRIDE)
+        return;
+    uint32_t i = (target - THUNK_BASE) / THUNK_STRIDE;
+    if (gt_is_game())
+        g_cnt_game[i]++;
+    else
+        g_cnt_other[i]++;
+    uint64_t now = rt_monotonic_ns();
+    if (!gt_is_game() || now - last < 5000000000ull)
+        return;
+    last = now;
+    for (int side = 0; side < 2; ++side)
+    {
+        uint32_t* c = side ? g_cnt_other : g_cnt_game;
+        char line[1200];
+        int o = snprintf(line, sizeof line, "[shims] %s, 5 s:", side ? "other threads" : "drawing thread");
+        for (int k = 0; k < 12; ++k)
+        {
+            uint32_t best = 0, bi = 0;
+            for (uint32_t j = 0; j < g_count; ++j)
+                if (c[j] > best)
+                    best = c[j], bi = j;
+            if (!best)
+                break;
+            const char* nm = strchr(g_thunks[bi].name, '!');
+            o += snprintf(line + o, sizeof line - (size_t)o, " %s %u", nm ? nm + 1 : g_thunks[bi].name, best);
+            c[bi] = 0;
+        }
+        rt_log("%s\n", line);
+        memset(c, 0, sizeof g_cnt_game);
+    }
+}
+
+static int dispatch(Guest* g, uint32_t target)
+{
+    shimcount(target);
     for (unsigned i = 0; i < g_nat; ++i)
         if (g_at[i].addr == target)
         {

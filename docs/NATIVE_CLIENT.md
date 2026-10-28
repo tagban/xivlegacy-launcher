@@ -68,6 +68,8 @@ button is No.
 | `XIVLEGACY_FILES_TRACE=1` | every file the game opens, with its handle |
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
+| `XIVLEGACY_PARALLEL=1` | the main loop runs beside the guest lock, as on Windows (experimental: `docs/PARALLEL.md`); control FIFO `par 0`/`par 1` switches it, `mark <text>` logs a marker |
+| `XIVLEGACY_SHIMCOUNT=1` | calls per shim every 5 s, the drawing thread's and the others' |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 
 ## Lessons the game taught
@@ -91,6 +93,8 @@ button is No.
   drawing-thread turn between them, and a zero-timeout `select` on its socket each tick gave the lock
   up again: the loop ran at 11 Hz in the world and the mouse camera turned in steps. It now gets
   3 ms turns outside loading and keeps the lock through a poll: ~24 Hz, about once a frame (fps -10%).
+  With `XIVLEGACY_PARALLEL=1` it runs beside the guest lock instead: ~29 Hz with no fps cost
+  (`docs/PARALLEL.md`).
 - The CRT's x87 math dispatch jumps through unaligned tables (`discovery/CrtDispatch.py`); the
   MSSMIXER section holds a CPU check outside `.text` (a native stand-in in `xiv_misc.c`).
 

@@ -535,7 +535,10 @@ impl<'a> FunctionTranslator<'a> {
             None => (None, full),
         };
         if prefix == Some("lock") {
-            prefix = None; // one guest thread runs at a time (guest lock), so lock is implicit
+            // xadd, cmpxchg and xchg on memory are atomic below (guest threads may run at once,
+            // gthread.h); any other locked instruction runs as a plain read-modify-write, which the
+            // guest lock makes atomic for the threads that share it
+            prefix = None;
         }
         let ops = &ins.operands;
         let nxt = ins.address + ins.size as u64;
@@ -619,6 +622,14 @@ impl<'a> FunctionTranslator<'a> {
             }
             "xchg" => {
                 let (a, b) = ops2(ops)?;
+                // with memory, xchg is locked on x86 even without the prefix (guest.h: rt_xchg)
+                let (m, r) = if a.ty == OP_MEM { (a, b) } else { (b, a) };
+                if m.ty == OP_MEM {
+                    let bits = bits_of(m);
+                    let l1 = format!("{{ {} t = rt_xchg{}(A, {});", ut(bits)?, bits, self.rd(ins, r, None)?);
+                    let l2 = self.wr(r, "t")? + " }";
+                    with_pro!(vec![l1, l2]);
+                }
                 let l1 = format!("{{ {} t = {};", ut(bits_of(a))?, self.rd(ins, a, None)?);
                 let l2 = self.wr(a, &self.rd(ins, b, None)?)?;
                 let l3 = self.wr(b, "t")? + " }";
@@ -771,6 +782,14 @@ impl<'a> FunctionTranslator<'a> {
                 let (d, s) = ops2(ops)?;
                 let bits = bits_of(d);
                 let t = ut(bits)?;
+                if d.ty == OP_MEM {
+                    // atomic (lock xadd: reference counts, the guest's InterlockedIncrement)
+                    let mut v = vec![format!("{{ {} b = {}; {} a = rt_xadd{}(A, b); {} r = ({})(a + b);", t, self.rd(ins, s, None)?, t,
+                                             bits, t, t)];
+                    v.extend(Self::flags_add("a", "b", "r", bits, None)?);
+                    v.push(self.wr(s, "a")? + " }");
+                    with_pro!(v);
+                }
                 let mut v = vec![format!("{{ {} a = {}; {} b = {}; {} r = ({})(a + b);", t, self.rd(ins, d, None)?, t,
                                          self.rd(ins, s, None)?, t, t)];
                 v.extend(Self::flags_add("a", "b", "r", bits, None)?);
@@ -788,6 +807,14 @@ impl<'a> FunctionTranslator<'a> {
                     32 => ("eax", "eax = v;"),
                     _ => return Err(Tx::Fatal(format!("KeyError: {} (cmpxchg)", bits))),
                 };
+                if d.ty == OP_MEM {
+                    // atomic: v is what memory held, and the store happened iff it equalled the accumulator
+                    let mut v = vec![format!("{{ {} a = {}; {} v = rt_cmpxchg{}(A, a, {}); {} r = ({})(a - v);", t, acc, t, bits,
+                                             self.rd(ins, s, None)?, t, t)];
+                    v.extend(Self::flags_sub("a", "v", "r", bits, None)?);
+                    v.push(format!("if (!zf) {{ {} }} }}", acc_w));
+                    with_pro!(v);
+                }
                 let mut v = vec![format!("{{ {} a = {}; {} v = {}; {} r = ({})(a - v);", t, acc, t, self.rd(ins, d, None)?, t, t)];
                 v.extend(Self::flags_sub("a", "v", "r", bits, None)?);
                 let w = self.wr(d, &self.rd(ins, s, None)?)?;

@@ -114,6 +114,7 @@ static void fiber_main(void* arg)
     wr32(sp - 8, 0xFEEDF00Du);
     g->esp = sp - 8;
     g->df = 0;
+    gt_guest_begin();
     rt_call_indirect(g, f->start);
     /* a fiber routine that returns ends its thread on Windows; the job system's never do */
     rt_log("[fiber] fiber %08x returned from its start routine; ending the process\n", f->guest);
@@ -149,6 +150,7 @@ static void sh_SwitchToFiber(Guest* g)
     d->teb = teb;
     d->tid = t->tid;
     d->g.fs_base = teb;
+    d->par = t->par;
     memcpy(d->tls, t->tls, sizeof d->tls);
     wr32(teb, to->seh);
     wr32(teb + 4, to->sbase);

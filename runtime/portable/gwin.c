@@ -186,7 +186,7 @@ static unsigned class_for(uint32_t total)
     return CLASS_LARGE;
 }
 
-uint32_t gheap_alloc(uint32_t size, int zero)
+static uint32_t heap_alloc(uint32_t size, int zero)
 {
     uint64_t total = (uint64_t)size + 8;
     if (total > 0xFFF00000u)
@@ -229,7 +229,7 @@ static int live(uint32_t p)
     return p >= 8 && gwin_is_committed(p - 8) && (rd32(p - 4) & 0xFFFF0000u) == TAG;
 }
 
-void gheap_free(uint32_t p)
+static void heap_free(uint32_t p)
 {
     if (!p || !live(p))
         return;
@@ -250,10 +250,10 @@ uint32_t gheap_size(uint32_t p)
     return live(p) ? rd32(p - 8) : ~0u;
 }
 
-uint32_t gheap_realloc(uint32_t p, uint32_t size, int zero, int in_place_only)
+static uint32_t heap_realloc(uint32_t p, uint32_t size, int zero, int in_place_only)
 {
     if (!p)
-        return in_place_only ? 0 : gheap_alloc(size, zero);
+        return in_place_only ? 0 : heap_alloc(size, zero);
     if (!live(p))
         return 0;
     uint32_t old = rd32(p - 8);
@@ -270,11 +270,49 @@ uint32_t gheap_realloc(uint32_t p, uint32_t size, int zero, int in_place_only)
     }
     if (in_place_only)
         return 0;
-    uint32_t q = gheap_alloc(size, zero);
+    uint32_t q = heap_alloc(size, zero);
     if (!q)
         return 0;
     memcpy(GUEST_PTR(q), GUEST_PTR(p), old < size ? old : size);
-    gheap_free(p);
+    heap_free(p);
+    return q;
+}
+
+/* The free lists have their own lock: threads that run beside the guest lock (XIVLEGACY_PARALLEL)
+ * allocate too, and some shims that allocate run without the runtime lock. */
+static volatile uint32_t g_heap_lock;
+
+static void heap_lock(void)
+{
+    while (plat_atomic_cas32(&g_heap_lock, 0, 1) != 0)
+        plat_yield();
+}
+
+static void heap_unlock(void)
+{
+    plat_atomic_cas32(&g_heap_lock, 1, 0);
+}
+
+uint32_t gheap_alloc(uint32_t size, int zero)
+{
+    heap_lock();
+    uint32_t p = heap_alloc(size, zero);
+    heap_unlock();
+    return p;
+}
+
+void gheap_free(uint32_t p)
+{
+    heap_lock();
+    heap_free(p);
+    heap_unlock();
+}
+
+uint32_t gheap_realloc(uint32_t p, uint32_t size, int zero, int in_place_only)
+{
+    heap_lock();
+    uint32_t q = heap_realloc(p, size, zero, in_place_only);
+    heap_unlock();
     return q;
 }
 

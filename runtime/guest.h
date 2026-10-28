@@ -55,6 +55,51 @@ RT_INLINE double rdf64(uint32_t a) { double v; memcpy(&v, GUEST_PTR(a), 8); retu
 RT_INLINE void wrf32(uint32_t a, float v) { memcpy(GUEST_PTR(a), &v, 4); }
 RT_INLINE void wrf64(uint32_t a, double v) { memcpy(GUEST_PTR(a), &v, 8); }
 
+/* x86's locked read-modify-writes (lock xadd, lock cmpxchg, xchg with memory): atomic and a full
+ * barrier, as on x86, for guest threads that run at the same time (gthread.h). x86 allows them
+ * unaligned; arm64 does not, so an unaligned one is a plain read-modify-write (the guest lock still
+ * makes it atomic for the threads that share it). */
+#if defined(__GNUC__) || defined(__clang__)
+#define RT_ATOMIC_OPS(bits, T)                                                                          \
+    RT_INLINE T rt_xadd##bits(uint32_t a, T v)                                                         \
+    {                                                                                                  \
+        if (!(a & (sizeof(T) - 1)))                                                                    \
+            return __atomic_fetch_add((T*)GUEST_PTR(a), v, __ATOMIC_SEQ_CST);                          \
+        T o = rd##bits(a);                                                                             \
+        wr##bits(a, (T)(o + v));                                                                       \
+        return o;                                                                                      \
+    }                                                                                                  \
+    RT_INLINE T rt_xchg##bits(uint32_t a, T v)                                                         \
+    {                                                                                                  \
+        if (!(a & (sizeof(T) - 1)))                                                                    \
+            return __atomic_exchange_n((T*)GUEST_PTR(a), v, __ATOMIC_SEQ_CST);                         \
+        T o = rd##bits(a);                                                                             \
+        wr##bits(a, v);                                                                                \
+        return o;                                                                                      \
+    }                                                                                                  \
+    /* returns what memory held; stores v there iff that was expected */                              \
+    RT_INLINE T rt_cmpxchg##bits(uint32_t a, T expected, T v)                                          \
+    {                                                                                                  \
+        if (!(a & (sizeof(T) - 1)))                                                                    \
+        {                                                                                              \
+            __atomic_compare_exchange_n((T*)GUEST_PTR(a), &expected, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); \
+            return expected;                                                                           \
+        }                                                                                              \
+        T o = rd##bits(a);                                                                             \
+        if (o == expected)                                                                             \
+            wr##bits(a, v);                                                                            \
+        return o;                                                                                      \
+    }
+#else
+#define RT_ATOMIC_OPS(bits, T)                                                                          \
+    RT_INLINE T rt_xadd##bits(uint32_t a, T v) { T o = rd##bits(a); wr##bits(a, (T)(o + v)); return o; } \
+    RT_INLINE T rt_xchg##bits(uint32_t a, T v) { T o = rd##bits(a); wr##bits(a, v); return o; }         \
+    RT_INLINE T rt_cmpxchg##bits(uint32_t a, T e, T v) { T o = rd##bits(a); if (o == e) wr##bits(a, v); return o; }
+#endif
+RT_ATOMIC_OPS(8, uint8_t)
+RT_ATOMIC_OPS(16, uint16_t)
+RT_ATOMIC_OPS(32, uint32_t)
+
 #include "sse.h" /* X128 and the SSE/MMX helpers; needs rd64/wr64 above */
 
 typedef struct Guest

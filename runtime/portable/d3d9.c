@@ -1574,15 +1574,27 @@ static void present(void)
     {
         static int on = -1;
         static uint64_t last_draws, last_clears, last_ns;
+        static uint32_t last_reads;
+        extern volatile uint32_t u32_cursor_reads;
         if (on < 0)
             on = getenv("XIVLEGACY_FRAMESTATS") != NULL;
         if (on && g_dev->frames % 60 == 0)
         {
             uint64_t now = rt_monotonic_ns();
-            rt_log("[d3d9] frames %llu-%llu: %.1f fps, %.1f draws, %.1f clears a frame\n", (unsigned long long)g_dev->frames - 59,
+            uint32_t reads = u32_cursor_reads;
+            static uint64_t last_rg, last_ro, last_rt;
+            uint64_t rg, ro, rtk;
+            gt_rt_costs(&rg, &ro, &rtk);
+            static uint64_t last_gw;
+            uint64_t gw, grd, grb;
+            gt_game_costs(&gw, &grd, &grb);
+            rt_log("[d3d9] locks: drawer waited %.2f ms a frame for the guest lock, %.2f ms for the runtime lock (%.0f takes); others %.2f ms\n",
+                (gw - last_gw) / 60e6, (rg - last_rg) / 60e6, (rtk - last_rt) / 60.0, (ro - last_ro) / 60e6);
+            last_rg = rg, last_ro = ro, last_rt = rtk, last_gw = gw;
+            rt_log("[d3d9] frames %llu-%llu: %.1f fps, %.1f draws, %.1f clears a frame, main loop %.1f/s\n", (unsigned long long)g_dev->frames - 59,
                 (unsigned long long)g_dev->frames, last_ns ? 60e9 / (double)(now - last_ns) : 0.0, (g_dev->draws - last_draws) / 60.0,
-                (g_dev->clears - last_clears) / 60.0);
-            last_draws = g_dev->draws, last_clears = g_dev->clears, last_ns = now;
+                (g_dev->clears - last_clears) / 60.0, last_ns ? (reads - last_reads) * 1e9 / (double)(now - last_ns) : 0.0);
+            last_draws = g_dev->draws, last_clears = g_dev->clears, last_ns = now, last_reads = reads;
         }
     }
     /* XIVLEGACY_FRAMESTATS: each slow frame (over 45 ms) with what happened during it */
