@@ -134,6 +134,22 @@ void thunk_register_at(uint32_t addr, Shim fn)
         g_at[g_nat].addr = addr, g_at[g_nat++].fn = fn;
 }
 
+/* XIVLEGACY_TRACE_WINDOW=<from>:<to>: the trace only between those seconds after the first import call
+ * (a moment late in a session, without a full session's log) */
+static int trace_now(void)
+{
+    static double from = -1, to;
+    static uint64_t t0;
+    if (from < 0)
+    {
+        const char* w = getenv("XIVLEGACY_TRACE_WINDOW");
+        from = w ? atof(w) : 0, to = w && strchr(w, ':') ? atof(strchr(w, ':') + 1) : 1e12;
+        t0 = rt_monotonic_ns();
+    }
+    double since = (double)(rt_monotonic_ns() - t0) * 1e-9;
+    return since >= from && since < to;
+}
+
 int thunk_dispatch(Guest* g, uint32_t target)
 {
     for (unsigned i = 0; i < g_nat; ++i)
@@ -180,7 +196,7 @@ int thunk_dispatch(Guest* g, uint32_t target)
             rt_log("[first] %08x %-44s (%08x %08x %08x) = %08x\n", site, name, a0, a1, a2, g->eax);
         return 1;
     }
-    if (g_trace && (!trace_filter || strstr(name, trace_filter)))
+    if (g_trace && (!trace_filter || strstr(name, trace_filter)) && trace_now())
     {
         uint32_t site = rd32(g->esp), a0 = rd32(g->esp + 4), a1 = rd32(g->esp + 8), a2 = rd32(g->esp + 12), a3 = rd32(g->esp + 16);
         s(g);
