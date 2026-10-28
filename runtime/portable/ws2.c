@@ -700,7 +700,11 @@ static void sh_select(Guest* g)
     if (tv)
         t.tv_sec = (long)rd32(tv), t.tv_usec = (long)rd32(tv + 4);
     int r;
-    gt_unlock();
+    /* A poll (zero timeout) keeps the guest lock: the game's main loop polls its socket every
+     * tick, and taking the lock back after it could wait out a drawing-thread turn (up to 50 ms). */
+    int poll = tv && !t.tv_sec && !t.tv_usec;
+    if (!poll)
+        gt_unlock();
     if (!total)
     {
         plat_sleep_ms(tv ? (uint32_t)(t.tv_sec * 1000 + t.tv_usec / 1000) : 0xFFFFFFFFu);
@@ -709,7 +713,8 @@ static void sh_select(Guest* g)
     else
         r = select((int)maxfd + 1, &hs[0], &hs[1], &hs[2], tv ? &t : NULL);
     int e = host_errno();
-    gt_lock();
+    if (!poll)
+        gt_lock();
     if (r < 0)
     {
         gt_set_error(wsa_error(e));

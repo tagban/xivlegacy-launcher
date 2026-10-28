@@ -33,6 +33,13 @@ static volatile uint32_t g_next_ticket, g_now_serving;
 #define QUANTUM_NS 1000000ull
 #define GAME_QUANTUM_NS 50000000ull
 static RT_TLS uint64_t t_quantum_ns;
+/* The game's main loop (the thread that pumps its window: input, the camera's controls, game
+ * logic) does a tick's work in about 3 ms. With the 1 ms turn every thread gets, each tick was cut
+ * into pieces with a drawing-thread turn between them, and the loop ran at 11 Hz in the world: the
+ * mouse camera turned in steps, several frames apart. A 3 ms turn runs it at ~24 Hz, about once a
+ * frame (fps 27 -> 24; 4 ms ran it at 29 Hz for fps 22). */
+#define MAIN_QUANTUM_NS 3000000ull
+static RT_TLS int t_main;
 /* Behind the loading screen the drawing thread's turn is short. The game loads through worker
  * threads that each poll for work and yield (SwitchToThread) when there is none, while the drawing
  * thread keeps rendering the world behind the loading screen: every hand-off between them waited
@@ -132,6 +139,8 @@ void gt_lock(void)
     uint64_t quantum = QUANTUM_NS;
     if (game_now() && t_quantum_ns)
         quantum = g_loading ? LOADING_QUANTUM_NS : t_quantum_ns;
+    else if (t_main && !g_loading)
+        quantum = MAIN_QUANTUM_NS;
     g_deadline = t_acquired + quantum;
     rt_lock_contended = g_urgent > (t_urgent ? 1u : 0u);
 }
@@ -155,6 +164,8 @@ void gt_lock_urgent(void)
     t_urgent = 0;
     plat_atomic_add32(&g_urgent, (uint32_t)-1);
 }
+
+void gt_mark_main_thread(void) { t_main = 1; }
 
 void gt_set_loading(int on) { g_loading = on != 0; }
 int gt_loading(void) { return (int)g_loading; }
