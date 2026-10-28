@@ -494,6 +494,13 @@ static int (*g_close_handler)(void); /* the host's: e.g. a logout before the run
 
 static void pump(void)
 {
+    static RT_TLS int marked;
+    if (!marked)
+    {
+        Wnd* mw = main_wnd(); /* the thread that owns the game's window runs its main loop */
+        if (mw && gt_self() && mw->tid == gt_self()->tid)
+            marked = 1, gt_mark_main_thread();
+    }
     apply_display_request();
     if (!g_sdl_up)
         return;
@@ -579,7 +586,11 @@ static void pump(void)
                 break;
             int bx = to_game_x(w, e.button.x), by = to_game_y(w, e.button.y);
             uint32_t lp = ((uint32_t)(uint16_t)by << 16) | (uint16_t)bx;
-            post(w->tid, w->hwnd, msg, mouse_keys(SDL_GetMouseState(NULL, NULL)), lp);
+            /* the buttons held after this event: SDL's own state may not have caught up (or be a
+             * scripted press's) */
+            SDL_MouseButtonFlags held = SDL_GetMouseState(NULL, NULL);
+            held = down ? held | SDL_BUTTON_MASK(e.button.button) : held & ~SDL_BUTTON_MASK(e.button.button);
+            post(w->tid, w->hwnd, msg, mouse_keys(held), lp);
             break;
         }
         case SDL_EVENT_MOUSE_WHEEL:

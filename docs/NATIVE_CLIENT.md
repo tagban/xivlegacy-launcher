@@ -52,7 +52,7 @@ button is No.
 
 | Variable | |
 |---|---|
-| `XIVLEGACY_CONTROL=<fifo>` | drive a running game: `key <name>`, `hold <key> <ms>`, `click <x> <y>`, `move <x> <y>`, `type <text>`, `snap <png>`, `stack`, `findf <x> <y> <z> [tol]` (guest addresses holding a float triple), `dumpf <hex addr> [count]` (guest floats), `trace` (the next frame's targets, clears, copies and draws), `snaptex <id> <png>` (a texture or render target by its trace id; float formats scaled), `gfxdbg <n>` (1 wireframe, 2 gray textures, 3 gray render targets), `skipvs <id>`, `vsc` (current vertex constants), `cpuvs <id>` (the next draw with that vertex shader against the CPU interpreter), `onlyvs <id>` (draw only that shader in full-size passes), `dumpvs <id> [n]` (draw inputs), `watch <hex addr> [bytes]` / `unwatch` (log the translated functions that write there) |
+| `XIVLEGACY_CONTROL=<fifo>` | drive a running game: `key <name>`, `hold <key> <ms>`, `click <x> <y>`, `move <x> <y>`, `type <text>`, `snap <png>`, `stack`, `findf <x> <y> <z> [tol [hex from]]` (guest addresses holding a float triple), `findnan` (three NaN floats in a row), `look <button> <dx> <dy> <steps> [ms [still ms]]` (hold a mouse button and drag: mouse-look), `keydown <key>` / `keyup <key>`, `wheel <notches> [count]`, `stall <ms>` (hold the guest lock: a hitch), `dumpf <hex addr> [count]` (guest floats), `trace` (the next frame's targets, clears, copies and draws), `snaptex <id> <png>` (a texture or render target by its trace id; float formats scaled), `gfxdbg <n>` (1 wireframe, 2 gray textures, 3 gray render targets), `skipvs <id>`, `vsc` (current vertex constants), `cpuvs <id>` (the next draw with that vertex shader against the CPU interpreter), `onlyvs <id>` (draw only that shader in full-size passes), `dumpvs <id> [n]` (draw inputs), `watch <hex addr> [bytes]` / `unwatch` (log the translated functions that write there) |
 | `XIVLEGACY_KEYS="12:return,15:left,17:click@575x515"` | scripted input at seconds after start |
 | `XIVLEGACY_SNAP=<dir>`, `XIVLEGACY_SNAP_EVERY=<n>` | the back buffer as PNGs |
 | `XIVLEGACY_PROFILE=<seconds>:<delay>` | in-process sampling profiler (self/inclusive by function, per thread) |
@@ -88,6 +88,12 @@ button is No.
   thread. 8 ms turns held the world at 26 fps, 50 ms at 40. For the same reason the XAudio2 engine
   fills its device queue in batches (50-80 ms) when the lock comes free, and asks for it urgently
   (`gt_lock_urgent`) only when the queue runs low.
+- The game's main loop (the thread that owns its window) reads the mouse with `GetCursorPos` and
+  sets the camera's target; the drawing thread moves the camera toward it each frame. With the
+  1 ms turn other threads get, each main-loop tick (about 3 ms of work) was cut into pieces with a
+  drawing-thread turn between them, and a zero-timeout `select` on its socket each tick gave the lock
+  up again: the loop ran at 11 Hz in the world and the mouse camera turned in steps. It now gets
+  3 ms turns outside loading and keeps the lock through a poll: ~24 Hz, about once a frame (fps -10%).
 - The CRT's x87 math dispatch jumps through unaligned tables (`discovery/CrtDispatch.py`); the
   MSSMIXER section holds a CPU check outside `.text` (a native stand-in in `xiv_misc.c`).
 

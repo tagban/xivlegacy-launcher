@@ -33,6 +33,8 @@ void gt_unlock(void);
 /* gt_lock for a thread on a deadline (the audio engine): the holder yields at its next safe point
  * instead of at the end of its turn. */
 void gt_lock_urgent(void);
+/* The calling thread runs the game's main loop: its turn with the lock is longer (gthread.c). */
+void gt_mark_main_thread(void);
 /* nanoseconds threads other than the drawing thread have held the lock in all (hitch log) */
 uint64_t gt_other_held_ns(void);
 /* the drawing thread's total lock waits and file reads (hitch log); gt_note_read records a read */

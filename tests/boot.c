@@ -414,7 +414,35 @@ static void profiler_thread(void* arg)
     }
 }
 
-static void find_floats(const float v[3], float tol);
+static void find_floats(const float v[3], float tol, uint32_t from);
+static void find_nans(void);
+
+/* XIVLEGACY_NANWATCH=<hex guest address>: log when the float there turns NaN (and back); with
+ * XIVLEGACY_YAWLOG also the camera's yaw, from the view matrix's first row (0x01308520 in 1.23b) */
+static float guest_float(uint32_t a)
+{
+    uint32_t w = rd32(a);
+    float f;
+    memcpy(&f, &w, 4);
+    return f;
+}
+
+static void nan_watch(void* arg)
+{
+    uint32_t a = (uint32_t)strtoul((const char*)arg, NULL, 16);
+    int was = 0, yawlog = getenv("XIVLEGACY_YAWLOG") != NULL;
+    float last_yaw = 0;
+    for (;;)
+    {
+        plat_sleep_ms(1);
+        int now = isnan(guest_float(a)) != 0;
+        if (now != was)
+            printf("[nanwatch] %08x %s (t %.3f)\n", a, (was = now) ? "NaN" : "a number again", (double)rt_monotonic_ns() * 1e-9);
+        float yaw = atan2f(guest_float(0x01308528), guest_float(0x01308520)) * 57.2958f;
+        if (yawlog && yaw != last_yaw)
+            printf("[yaw] %.3f (t %.4f)\n", last_yaw = yaw, (double)rt_monotonic_ns() * 1e-9);
+    }
+}
 static void watch_start(uint32_t a, uint32_t n);
 static void watch_stop(void);
 
@@ -527,10 +555,16 @@ static SDL_WindowID game_window(void)
 
 /* XIVLEGACY_CONTROL=<fifo>: commands, one a line, for driving a running game by hand:
  *   key [ctrl+]<SDL key name>  hold <key> <ms>    click <x> <y>      move <x> <y>      type <text>
- *   snap <png path>         stack */
+ *   keydown <key>  keyup <key>   snap <png path>   stack
+ *   look <button> <dx> <dy> <steps> [ms [still ms]]   hold a mouse button (1 left, 3 right), move by dx, dy each step
+ *                           (from where the last click or move left the cursor)
+ *   findnan                 guest addresses holding three NaN floats in a row
+ *   stall <ms>              hold the guest lock that long (a hitch)
+ *   wheel <notches> [count] mouse wheel turns, count times */
 static void control_thread(void* arg)
 {
     const char* path = (const char*)arg;
+    float cx = 640, cy = 360; /* where the last click or move put the cursor */
     for (;;)
     {
         FILE* f = fopen(path, "r"); /* blocks until a writer opens it */
@@ -558,6 +592,7 @@ static void control_thread(void* arg)
             {
                 SDL_Event e;
                 memset(&e, 0, sizeof e);
+                cx = x, cy = y;
                 e.type = SDL_EVENT_MOUSE_MOTION;
                 e.motion.windowID = id, e.motion.x = x, e.motion.y = y;
                 SDL_PushEvent(&e);
@@ -572,6 +607,60 @@ static void control_thread(void* arg)
                     plat_sleep_ms(80);
                 }
             }
+            else if (!strncmp(line, "look ", 5))
+            {
+                int b = 3, steps = 30, ms = 16, still = 0;
+                float dx = 0, dy = 0;
+                if (sscanf(line + 5, "%d %f %f %d %d %d", &b, &dx, &dy, &steps, &ms, &still) >= 4)
+                {
+                    float mx = cx, my = cy;
+                    SDL_Event e;
+                    for (int i = -1; i <= steps; ++i)
+                    {
+                        memset(&e, 0, sizeof e);
+                        if (i < 0 || i == steps)
+                        {
+                            e.type = i < 0 ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+                            e.button.windowID = id, e.button.button = (Uint8)b, e.button.down = i < 0, e.button.clicks = 1;
+                            e.button.x = mx, e.button.y = my;
+                        }
+                        else
+                        {
+                            e.type = SDL_EVENT_MOUSE_MOTION;
+                            e.motion.windowID = id, e.motion.state = SDL_BUTTON_MASK(b);
+                            mx += dx, my += dy;
+                            e.motion.x = mx, e.motion.y = my, e.motion.xrel = dx, e.motion.yrel = dy;
+                        }
+                        SDL_PushEvent(&e);
+                        plat_sleep_ms((uint32_t)ms + (i == steps - 1 ? (uint32_t)still : 0));
+                    }
+                }
+            }
+            else if (!strncmp(line, "wheel ", 6))
+            {
+                /* wheel <notches> [count]: mouse wheel turns (fractions too, as a trackpad sends) */
+                float y = 0;
+                int n = 1;
+                if (sscanf(line + 6, "%f %d", &y, &n) >= 1)
+                    for (int i = 0; i < n; ++i)
+                    {
+                        SDL_Event e;
+                        memset(&e, 0, sizeof e);
+                        e.type = SDL_EVENT_MOUSE_WHEEL;
+                        e.wheel.windowID = id, e.wheel.y = y, e.wheel.mouse_x = cx, e.wheel.mouse_y = cy;
+                        SDL_PushEvent(&e);
+                        plat_sleep_ms(16);
+                    }
+            }
+            else if (!strncmp(line, "stall ", 6))
+            {
+                /* stall <ms>: hold the guest lock that long, as a long hitch does */
+                gt_lock();
+                plat_sleep_ms((uint32_t)atoi(line + 6));
+                gt_unlock();
+            }
+            else if (!strcmp(line, "findnan"))
+                find_nans();
             else if (!strncmp(line, "type ", 5))
             {
                 for (const char* p = line + 5; *p; ++p)
@@ -605,6 +694,17 @@ static void control_thread(void* arg)
                     plat_sleep_ms(60);
                 }
             }
+            else if (!strncmp(line, "keydown ", 8) || !strncmp(line, "keyup ", 6))
+            {
+                int down = line[3] == 'd';
+                SDL_Scancode sc = SDL_GetScancodeFromName(strchr(line, ' ') + 1);
+                SDL_Event e;
+                memset(&e, 0, sizeof e);
+                e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP, e.key.windowID = id, e.key.scancode = sc, e.key.down = down;
+                e.key.key = SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false);
+                if (sc != SDL_SCANCODE_UNKNOWN)
+                    SDL_PushEvent(&e);
+            }
             else if (!strncmp(line, "hold ", 5))
             {
                 char name[64];
@@ -626,10 +726,11 @@ static void control_thread(void* arg)
                 g9_snap_next(line + 5);
             else if (!strncmp(line, "findf ", 6))
             {
-                /* findf x y z [tol]: guest addresses holding the float triple (readable regions only) */
+                /* findf x y z [tol [from]]: guest addresses (from a hex address on) holding the float triple (readable regions only) */
                 float v[3], tol = 0.05f;
-                if (sscanf(line + 6, "%f %f %f %f", &v[0], &v[1], &v[2], &tol) >= 3)
-                    find_floats(v, tol);
+                unsigned from = 0;
+                if (sscanf(line + 6, "%f %f %f %f %x", &v[0], &v[1], &v[2], &tol, &from) >= 3)
+                    find_floats(v, tol, from);
             }
             else if (!strncmp(line, "dumpf ", 6))
             {
@@ -707,9 +808,9 @@ static void control_thread(void* arg)
 
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
-static void find_floats(const float v[3], float tol)
+static void find_floats(const float v[3], float tol, uint32_t from)
 {
-    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0), end = a + 0x100000000ull;
+    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(from), end = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0) + 0x100000000ull;
     int hits = 0;
     while (a < end && hits < 64)
     {
@@ -737,6 +838,40 @@ static void find_floats(const float v[3], float tol)
         a += size;
     }
     printf("[findf] %d hits\n", hits);
+}
+
+/* three NaNs in a row with numbers on both sides: a vector that went bad, not uninitialized memory */
+static void find_nans(void)
+{
+    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0), end = a + 0x100000000ull;
+    int hits = 0;
+    while (a < end && hits < 64)
+    {
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj;
+        if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS)
+            break;
+        if (a >= end)
+            break;
+        if (info.protection & VM_PROT_READ)
+        {
+            const float* f = (const float*)(uintptr_t)a;
+            size_t n = (size_t)((a + size > end ? end - a : size) / 4);
+            for (size_t i = 1; i + 4 < n && hits < 64; ++i)
+                if (isnan(f[i]) && isnan(f[i + 1]) && isnan(f[i + 2]) && !isnan(f[i - 1]) && !isnan(f[i + 3]) && f[i - 1] != 0)
+                {
+                    uint32_t g = (uint32_t)((uintptr_t)&f[i] - (uintptr_t)GUEST_PTR(0));
+                    uint32_t bits;
+                    memcpy(&bits, &f[i], 4);
+                    printf("[findnan] %08x: %08x | %g . . . %g %g %g\n", g, bits, f[i - 1], f[i + 3], f[i + 4], i + 5 < n ? f[i + 5] : 0);
+                    hits++;
+                }
+        }
+        a += size;
+    }
+    printf("[findnan] %d hits\n", hits);
 }
 
 /* --- a write watchpoint: the page made read-only, each write to the watched bytes logged (the
@@ -889,6 +1024,8 @@ int main(int argc, char** argv)
     /* mainCRTStartup takes no arguments and ends the process through ExitProcess. */
     if (getenv("XIVLEGACY_KEYS"))
         plat_thread_start(scripted_input, getenv("XIVLEGACY_KEYS"));
+    if (getenv("XIVLEGACY_NANWATCH"))
+        plat_thread_start(nan_watch, getenv("XIVLEGACY_NANWATCH"));
     if (getenv("XIVLEGACY_CONTROL"))
         plat_thread_start(control_thread, getenv("XIVLEGACY_CONTROL"));
     if (getenv("XIVLEGACY_PROFILE"))
