@@ -121,6 +121,28 @@ fn sub_st(s: &str) -> String {
 }
 
 /// A function's text with its x87 stack in locals (guest.h, "x87 in locals") instead of g->st.
+/// An instruction whose operand has a host pointer P (host_ptr): its plain accesses through A go
+/// through P instead (atomics, bit offsets and the like keep A).
+fn through_host_ptr(lines: Vec<String>) -> Vec<String> {
+    if !lines.iter().any(|l| l.starts_with("unsigned char* P = ")) {
+        return lines;
+    }
+    const SWAPS: [(&str, &str); 14] = [
+        ("x_rd128(A)", "x_rdp128(P)"), ("x_wr128(A, ", "x_wrp128(P, "),
+        ("rdf32(A)", "rdpf32(P)"), ("rdf64(A)", "rdpf64(P)"), ("wrf32(A, ", "wrpf32(P, "), ("wrf64(A, ", "wrpf64(P, "),
+        ("rd8(A)", "rdp8(P)"), ("rd16(A)", "rdp16(P)"), ("rd32(A)", "rdp32(P)"), ("rd64(A)", "rdp64(P)"),
+        ("wr8(A, ", "wrp8(P, "), ("wr16(A, ", "wrp16(P, "), ("wr32(A, ", "wrp32(P, "), ("wr64(A, ", "wrp64(P, "),
+    ];
+    lines.into_iter().map(|mut l| {
+        for (a, b) in SWAPS {
+            if l.contains(a) {
+                l = l.replace(a, b);
+            }
+        }
+        l
+    }).collect()
+}
+
 fn x87_locals(lines: Vec<String>) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     for line in lines {
@@ -133,6 +155,9 @@ fn x87_locals(lines: Vec<String>) -> Vec<String> {
         let mut s = line.replace("REGS_DECL;", "REGS_DECL; X87_DECL;").replace("REGS_LOAD;", "REGS_LOAD; X87_LOAD;");
         s = s.replace("REGS_STORE;", "REGS_STORE; X87_STORE;");
         s = s.replace("REGS_LOAD_NF;", "REGS_LOAD_NF; X87_LOAD;").replace("REGS_STORE_NF;", "REGS_STORE_NF; X87_STORE;");
+        s = s.replace("REGS_IN;", "REGS_IN; X87_LOAD;").replace("REGS_STORE_R;", "REGS_STORE_R; X87_STORE;");
+        s = s.replace("REGS_STORE_RET;", "REGS_STORE_RET; X87_STORE;");
+        s = s.replace("REGS_LOAD_NF_R;", "REGS_LOAD_NF_R; X87_LOAD;").replace("REGS_STORE_NF_R;", "REGS_STORE_NF_R; X87_STORE;");
         s = sub_st(&s);
         s = s.replace("fpush(g, ", "X87_PUSH(").replace("fpop(g)", "X87_POP()").replace("fr(g, ", "fr_cw(x87_cw, ");
         for f in ["frnd", "fist16", "fist32", "fist64"] {
@@ -180,6 +205,11 @@ fn xmm_locals(lines: Vec<String>) -> Vec<String> {
         s = s.replace("REGS_STORE;", &format!("REGS_STORE; {}", store));
         s = s.replace("REGS_LOAD_NF;", &format!("REGS_LOAD_NF; {}", load));
         s = s.replace("REGS_STORE_NF;", &format!("REGS_STORE_NF; {}", store));
+        s = s.replace("REGS_IN;", &format!("REGS_IN; {}", load));
+        s = s.replace("REGS_STORE_R;", &format!("REGS_STORE_R; {}", store));
+        s = s.replace("REGS_STORE_RET;", &format!("REGS_STORE_RET; {}", store));
+        s = s.replace("REGS_LOAD_NF_R;", &format!("REGS_LOAD_NF_R; {}", load));
+        s = s.replace("REGS_STORE_NF_R;", &format!("REGS_STORE_NF_R; {}", store));
         out.push(s);
     }
     out
@@ -372,10 +402,36 @@ impl<'a> FunctionTranslator<'a> {
     fn mem_prologue(&self, ins: &Insn) -> R<Vec<String>> {
         for op in &ins.operands {
             if op.ty == OP_MEM {
-                return Ok(vec![format!("uint32_t A = {};", self.addr(ins, op, false)?)]);
+                let mut v = vec![format!("uint32_t A = {};", self.addr(ins, op, false)?)];
+                if let Some(p) = self.host_ptr(ins, op)? {
+                    v.push(p);
+                }
+                return Ok(v);
             }
         }
         Ok(Vec::new())
+    }
+
+    /// [reg + disp] (no index, the flat segment, a small displacement): also the host pointer P, the
+    /// register's place in the guest window plus the displacement in 64 bits, so the C compiler folds
+    /// the displacement into the load and shares one base among the accesses through a register
+    /// (with the 32-bit A each access was an add, a zero-extension and the load). Unlike A it does
+    /// not wrap at 4 GB: only an address within 16 MB of 0 or 4 GB would differ, none of them valid.
+    fn host_ptr(&self, ins: &Insn, op: &Op) -> R<Option<String>> {
+        let m = &op.mem;
+        if m.base == 0 || m.index != 0 || ![0, REG_DS, REG_ES, REG_SS].contains(&m.segment) || self.reloc_disp(ins)
+            || m.disp.abs() >= 1 << 24 {
+            return Ok(None);
+        }
+        let (b, _, bits) = self.reg(m.base)?;
+        if bits != 32 {
+            return Ok(None);
+        }
+        Ok(Some(if m.disp == 0 {
+            format!("unsigned char* P = GUEST_PTR({});", b)
+        } else {
+            format!("unsigned char* P = GUEST_PTR({}) + ({});", b, m.disp as i32)
+        }))
     }
 
     // ------------------------------------------------------------------ flags
@@ -432,9 +488,15 @@ impl<'a> FunctionTranslator<'a> {
         }
         if self.ctx.entries.contains(&target) {
             self.referenced.push(target);
-            return format!("{{ REGS_STORE; {}{:08x}(g); return; }}", self.ctx.prefix, target);
+            return format!("{{ REGS_STORE_R; RT_TAIL({}{:08x}_r); }}", self.ctx.prefix, target);
         }
         format!("RT_BADJUMP({});", hex32(target))
+    }
+
+    /// The entry the runtime calls (the table, indirect calls, the host): registers in g, through the
+    /// fast body that translated code calls directly with them in host registers (guest.h RT_CALL).
+    fn wrapper(&self) -> Vec<String> {
+        vec![format!("void {}{:08x}(Guest* g) {{ RT_WRAP({}{:08x}_r); }}", self.ctx.prefix, self.entry, self.ctx.prefix, self.entry)]
     }
 
     fn call(&mut self, target: u64, ret_addr: u64) -> Vec<String> {
@@ -444,7 +506,7 @@ impl<'a> FunctionTranslator<'a> {
             // _setjmp3: a host landing here too, for longjmp to come back to (guest.h)
             return vec![push, format!("REGS_STORE_NF; if (!RT_SETJMP(g)) {}{:08x}(g); REGS_LOAD_NF;", self.ctx.prefix, target)];
         }
-        vec![push, format!("REGS_STORE_NF; {}{:08x}(g); REGS_LOAD_NF;", self.ctx.prefix, target)]
+        vec![push, format!("REGS_STORE_NF_R; RT_CALL({}{:08x}_r); REGS_LOAD_NF_R;", self.ctx.prefix, target)]
     }
 
     // ------------------------------------------------------------------ translation
@@ -452,7 +514,9 @@ impl<'a> FunctionTranslator<'a> {
     pub fn translate(mut self) -> Result<Translated, crate::Error> {
         if self.ctx.longjmps.contains(&self.entry) {
             // the C library's longjmp: back to the landing its _setjmp3 call left (guest.h)
-            let lines = vec![format!("void {}{:08x}(Guest* g)", self.ctx.prefix, self.entry), "{".into(), "    rt_longjmp(g);".into(), "}".into()];
+            let mut lines = vec![format!("RtRegs RT_FASTCC {}{:08x}_r(RT_FAST_PARAMS)", self.ctx.prefix, self.entry), "{".into(),
+                                 "    RT_REGS_TO_G;".into(), "    rt_longjmp(g);".into(), "}".into()];
+            lines.extend(self.wrapper());
             return Ok(Translated { lines, unimpl: Vec::new(), referenced: Vec::new(), hooked: Vec::new() });
         }
         self.decode();
@@ -467,7 +531,7 @@ impl<'a> FunctionTranslator<'a> {
             }
             body.push(Item::Label(k));
             let (stmts, falls) = match self.one(ins) {
-                Ok(r) => r,
+                Ok((stmts, falls)) => (through_host_ptr(stmts), falls),
                 Err(Tx::Unsup(why)) => {
                     let text = format!("{} {}", ins.mnemonic, ins.op_str);
                     self.unimpl.push((ins.address, ins.mnemonic.clone(), why));
@@ -502,8 +566,8 @@ impl<'a> FunctionTranslator<'a> {
             body.push(Item::Line(format!("    {}", self.goto(p, None))));
         }
 
-        let mut out = vec![format!("void {}{:08x}(Guest* g)", self.ctx.prefix, self.entry), "{".into(),
-                           "    REGS_DECL;".into(), "    REGS_LOAD;".into()];
+        let mut out = vec![format!("RtRegs RT_FASTCC {}{:08x}_r(RT_FAST_PARAMS)", self.ctx.prefix, self.entry), "{".into(),
+                           "    REGS_DECL;".into(), "    REGS_IN;".into()];
         if let Some(first) = insns.first() {
             if first.address != self.entry {
                 out.push(format!("    goto L_{:08x};", self.entry));
@@ -523,7 +587,8 @@ impl<'a> FunctionTranslator<'a> {
         }
         out.push("}".into());
         let lines = if self.uses_x87 { x87_locals(out) } else { out };
-        let lines = xmm_locals(lines);
+        let mut lines = xmm_locals(lines);
+        lines.extend(self.wrapper());
         Ok(Translated { lines, unimpl: self.unimpl, referenced: self.referenced, hooked: self.hooked })
     }
 
@@ -818,7 +883,7 @@ impl<'a> FunctionTranslator<'a> {
                 v.push("}".into());
                 return Ok((v, false));
             }
-            pro.push(format!("{{ uint32_t t = {}; REGS_STORE; rt_call_indirect(g, t); return; }}", self.rd(ins, t, Some(32))?));
+            pro.push(format!("{{ uint32_t t = {}; REGS_STORE_R; RT_JUMPI(t); }}", self.rd(ins, t, Some(32))?));
             return Ok((pro, false));
         }
         if let Some(c) = mn.strip_prefix('j').and_then(cc) {
@@ -850,16 +915,16 @@ impl<'a> FunctionTranslator<'a> {
                 }
                 // No translated function there (code outside .text, say): the runtime decides,
                 // through its native handler, as for a call through a pointer.
-                return Ok((vec![format!("{{ esp -= 4; wr32(esp, {} + RD); REGS_STORE_NF; rt_call_indirect(g, {}); REGS_LOAD_NF; }}",
+                return Ok((vec![format!("{{ esp -= 4; wr32(esp, {} + RD); REGS_STORE_NF_R; RT_CALLI({}); REGS_LOAD_NF_R; }}",
                                         hex32(nxt), hex32(tgt))], true));
             }
-            pro.push(format!("{{ uint32_t t = {}; esp -= 4; wr32(esp, {} + RD); REGS_STORE_NF; rt_call_indirect(g, t); REGS_LOAD_NF; }}",
+            pro.push(format!("{{ uint32_t t = {}; esp -= 4; wr32(esp, {} + RD); REGS_STORE_NF_R; RT_CALLI(t); REGS_LOAD_NF_R; }}",
                              self.rd(ins, t, Some(32))?, hex32(nxt)));
             return Ok((pro, true));
         }
         if mn == "ret" {
             let n = ops.first().map(|o| o.imm).unwrap_or(0);
-            return Ok((vec![format!("esp += {}; REGS_STORE; return;", 4 + n)], false));
+            return Ok((vec![format!("esp += {}; REGS_STORE_RET; return RT_REGS_OUT;", 4 + n)], false));
         }
 
         unsup(mn)

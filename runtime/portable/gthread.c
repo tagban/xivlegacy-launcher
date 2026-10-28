@@ -165,7 +165,11 @@ void gt_lock_urgent(void)
     plat_atomic_add32(&g_urgent, (uint32_t)-1);
 }
 
-void gt_mark_main_thread(void) { t_main = 1; }
+void gt_mark_main_thread(void)
+{
+    t_main = 1;
+    plat_thread_interactive();
+}
 
 void gt_set_loading(int on) { g_loading = on != 0; }
 int gt_loading(void) { return (int)g_loading; }
@@ -278,6 +282,7 @@ void gt_mark_game_thread(void)
     t_game = 1;
     t_quantum_ns = GAME_QUANTUM_NS;
     t_drawer = ++g_drawer_gen;
+    plat_thread_interactive();
 }
 
 void gt_fiber_leave(void)

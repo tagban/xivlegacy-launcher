@@ -55,6 +55,20 @@ RT_INLINE double rdf64(uint32_t a) { double v; memcpy(&v, GUEST_PTR(a), 8); retu
 RT_INLINE void wrf32(uint32_t a, float v) { memcpy(GUEST_PTR(a), &v, 4); }
 RT_INLINE void wrf64(uint32_t a, double v) { memcpy(GUEST_PTR(a), &v, 8); }
 
+/* through a host pointer into the guest window (the translation's [reg + disp] operands) */
+RT_INLINE uint8_t rdp8(const unsigned char* p) { return *p; }
+RT_INLINE uint16_t rdp16(const unsigned char* p) { uint16_t v; memcpy(&v, p, 2); return v; }
+RT_INLINE uint32_t rdp32(const unsigned char* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+RT_INLINE uint64_t rdp64(const unsigned char* p) { uint64_t v; memcpy(&v, p, 8); return v; }
+RT_INLINE void wrp8(unsigned char* p, uint8_t v) { *p = v; }
+RT_INLINE void wrp16(unsigned char* p, uint16_t v) { memcpy(p, &v, 2); }
+RT_INLINE void wrp32(unsigned char* p, uint32_t v) { memcpy(p, &v, 4); }
+RT_INLINE void wrp64(unsigned char* p, uint64_t v) { memcpy(p, &v, 8); }
+RT_INLINE float rdpf32(const unsigned char* p) { float v; memcpy(&v, p, 4); return v; }
+RT_INLINE double rdpf64(const unsigned char* p) { double v; memcpy(&v, p, 8); return v; }
+RT_INLINE void wrpf32(unsigned char* p, float v) { memcpy(p, &v, 4); }
+RT_INLINE void wrpf64(unsigned char* p, double v) { memcpy(p, &v, 8); }
+
 #include "sse.h" /* X128 and the SSE/MMX helpers; needs rd64/wr64 above */
 
 typedef struct Guest
@@ -88,9 +102,11 @@ extern uint32_t rt_reloc_delta;
 extern uint32_t rt_image_lo, rt_image_hi; /* runtime range of the image */
 #define RD rt_reloc_delta
 
+#define RT_GB_DECL (void)0
 #define REGS_DECL                                                                                \
     uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi;                                             \
     unsigned cf, pf, af, zf, sf, of, df;                                                         \
+    RT_GB_DECL;                                                                                  \
     (void)af
 #define REGS_LOAD                                                                                \
     eax = g->eax; ecx = g->ecx; edx = g->edx; ebx = g->ebx;                                      \
@@ -101,6 +117,61 @@ extern uint32_t rt_image_lo, rt_image_hi; /* runtime range of the image */
     g->esp = esp; g->ebp = ebp; g->esi = esi; g->edi = edi;                                      \
     g->cf = (uint8_t)cf; g->pf = (uint8_t)pf; g->af = (uint8_t)af; g->zf = (uint8_t)zf;          \
     g->sf = (uint8_t)sf; g->of = (uint8_t)of; g->df = (uint8_t)df
+
+/* Between translated functions the general registers travel in host registers: each function has a
+ * fast body f_X_r taking and returning them packed two to a 64-bit value (swiftcall returns four
+ * such in registers), and an entry f_X(Guest*) for the runtime with them in g. Through g each call
+ * was ~45 loads and stores, half the drawing thread's time in translated code. The flags and DF
+ * still go through g (REGS_STORE_R at returns and tail jumps, REGS_IN at entry), as do the x87 and
+ * XMM registers. */
+typedef struct
+{
+    uint64_t a, b, c, d; /* eax|edx, ecx|esp, ebx|ebp, esi|edi */
+} RtRegs;
+#if defined(__has_attribute)
+#if __has_attribute(swiftcall)
+#define RT_FASTCC __attribute__((swiftcall))
+#endif
+#endif
+#ifndef RT_FASTCC
+#define RT_FASTCC
+#endif
+#define RT_PACK(lo, hi) ((uint64_t)(uint32_t)(lo) | (uint64_t)(uint32_t)(hi) << 32)
+#define RT_FAST_PARAMS Guest* g, uint64_t r_a, uint64_t r_b, uint64_t r_c, uint64_t r_d
+#define RT_UNPACK(a_, b_, c_, d_)                                                                  \
+    eax = (uint32_t)(a_); edx = (uint32_t)((a_) >> 32); ecx = (uint32_t)(b_); esp = (uint32_t)((b_) >> 32); \
+    ebx = (uint32_t)(c_); ebp = (uint32_t)((c_) >> 32); esi = (uint32_t)(d_); edi = (uint32_t)((d_) >> 32)
+#define REGS_IN                                                                                  \
+    RT_UNPACK(r_a, r_b, r_c, r_d);                                                               \
+    cf = g->cf; pf = g->pf; af = g->af; zf = g->zf; sf = g->sf; of = g->of; df = g->df
+#define RT_REGS_OUT ((RtRegs){ RT_PACK(eax, edx), RT_PACK(ecx, esp), RT_PACK(ebx, ebp), RT_PACK(esi, edi) })
+#define RT_REGS_G ((RtRegs){ RT_PACK(g->eax, g->edx), RT_PACK(g->ecx, g->esp), RT_PACK(g->ebx, g->ebp), RT_PACK(g->esi, g->edi) })
+#define RT_REGS_TO_G                                                                             \
+    g->eax = (uint32_t)r_a; g->edx = (uint32_t)(r_a >> 32); g->ecx = (uint32_t)r_b; g->esp = (uint32_t)(r_b >> 32); \
+    g->ebx = (uint32_t)r_c; g->ebp = (uint32_t)(r_c >> 32); g->esi = (uint32_t)r_d; g->edi = (uint32_t)(r_d >> 32)
+#define REGS_STORE_R                                                                             \
+    g->cf = (uint8_t)cf; g->pf = (uint8_t)pf; g->af = (uint8_t)af; g->zf = (uint8_t)zf;          \
+    g->sf = (uint8_t)sf; g->of = (uint8_t)of; g->df = (uint8_t)df
+#define REGS_STORE_NF_R g->df = (uint8_t)df
+/* a return stores the flags too: dropping them (only DF) made the game fail at its title screen,
+ * so some translated code reads flags a callee left, through a function entry (REGS_IN) */
+#define REGS_STORE_RET REGS_STORE_R
+#define REGS_LOAD_NF_R df = g->df
+#define RT_CALL(fn)                                                                              \
+    do { RtRegs r_ = fn(g, RT_PACK(eax, edx), RT_PACK(ecx, esp), RT_PACK(ebx, ebp), RT_PACK(esi, edi)); \
+         RT_UNPACK(r_.a, r_.b, r_.c, r_.d); } while (0)
+#define RT_TAIL(fn) return fn(g, RT_PACK(eax, edx), RT_PACK(ecx, esp), RT_PACK(ebx, ebp), RT_PACK(esi, edi))
+typedef RtRegs(RT_FASTCC* RtFastFn)(RT_FAST_PARAMS);
+/* a call or jump through a pointer (rt_fastcall.h) */
+RtRegs RT_FASTCC rt_call_indirect_r(Guest* g, uint32_t target, uint64_t r_a, uint64_t r_b, uint64_t r_c, uint64_t r_d);
+#define RT_CALLI(t)                                                                              \
+    do { RtRegs r_ = rt_call_indirect_r(g, (t), RT_PACK(eax, edx), RT_PACK(ecx, esp), RT_PACK(ebx, ebp), RT_PACK(esi, edi)); \
+         RT_UNPACK(r_.a, r_.b, r_.c, r_.d); } while (0)
+#define RT_JUMPI(t) return rt_call_indirect_r(g, (t), RT_PACK(eax, edx), RT_PACK(ecx, esp), RT_PACK(ebx, ebp), RT_PACK(esi, edi))
+#define RT_WRAP(fn)                                                                              \
+    do { RtRegs r_ = fn(g, RT_PACK(g->eax, g->edx), RT_PACK(g->ecx, g->esp), RT_PACK(g->ebx, g->ebp), RT_PACK(g->esi, g->edi)); \
+         g->eax = (uint32_t)r_.a; g->edx = (uint32_t)(r_.a >> 32); g->ecx = (uint32_t)r_.b; g->esp = (uint32_t)(r_.b >> 32); \
+         g->ebx = (uint32_t)r_.c; g->ebp = (uint32_t)(r_.c >> 32); g->esi = (uint32_t)r_.d; g->edi = (uint32_t)(r_.d >> 32); } while (0)
 
 /* Around calls: the arithmetic flags are not carried across a call (x86 code never relies on them
  * there), only the registers and DF. Function entries and tail jumps keep REGS_LOAD / REGS_STORE:
@@ -121,6 +192,9 @@ void rt_call_indirect(Guest* g, uint32_t target);
 #if defined(_MSC_VER)
 __declspec(noreturn)
 #elif defined(__GNUC__)
+__attribute__((noreturn))
+#endif
+#if defined(__GNUC__) || defined(__clang__)
 __attribute__((noreturn))
 #endif
 void rt_fatal(Guest* g, uint32_t addr, const char* what);
@@ -363,3 +437,32 @@ RT_INLINE void wrf80(uint32_t a, double v)
     memcpy(GUEST_PTR(a), &m, 8);
     memcpy(GUEST_PTR(a) + 8, &se, 2);
 }
+
+/* Translated functions (RT_TRANSLATION, set by the translation's funcs.h): the window's base is a
+ * local the compiler cannot see through, so it stays in a register and an access [reg + disp] is
+ * one load or store with the displacement folded in. With the base a constant, clang formed each
+ * address anew (add, orr with the base, then the access). The helpers above keep the plain form. */
+#if defined(RT_TRANSLATION) && defined(RT_GUEST_WINDOW) && defined(RT_GUEST_FIXED_BASE) && (defined(__clang__) || defined(__GNUC__))
+RT_INLINE unsigned char* rt_opaque_base(void)
+{
+    unsigned char* p = (unsigned char*)(uintptr_t)(RT_GUEST_FIXED_BASE);
+    __asm__("" : "+r"(p));
+    return p;
+}
+#undef RT_GB_DECL
+#define RT_GB_DECL unsigned char* const rt_gb = rt_opaque_base()
+#undef GUEST_PTR
+#define GUEST_PTR(a) (rt_gb + (uint32_t)(a))
+#define rd8(a) rdp8(GUEST_PTR(a))
+#define rd16(a) rdp16(GUEST_PTR(a))
+#define rd32(a) rdp32(GUEST_PTR(a))
+#define rd64(a) rdp64(GUEST_PTR(a))
+#define wr8(a, v) wrp8(GUEST_PTR(a), (v))
+#define wr16(a, v) wrp16(GUEST_PTR(a), (v))
+#define wr32(a, v) wrp32(GUEST_PTR(a), (v))
+#define wr64(a, v) wrp64(GUEST_PTR(a), (v))
+#define rdf32(a) rdpf32(GUEST_PTR(a))
+#define rdf64(a) rdpf64(GUEST_PTR(a))
+#define wrf32(a, v) wrpf32(GUEST_PTR(a), (v))
+#define wrf64(a, v) wrpf64(GUEST_PTR(a), (v))
+#endif

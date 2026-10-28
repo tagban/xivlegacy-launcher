@@ -74,6 +74,10 @@ GuestFn rt_lookup_any(uint32_t target)
     return fn;
 }
 
+/* rt_fastcall.h: what is not a translation goes straight to the native handler (the shims) */
+#define RT_FAST_NATIVE(g, t) ((g_native && g_native((g), (t))) ? (void)0 : rt_fatal((g), (t), "indirect call/jump to an address with no translation"))
+#include "rt_fastcall.h"
+
 void rt_call_indirect(Guest* g, uint32_t target)
 {
     GuestFn fn = rt_lookup_any(target);

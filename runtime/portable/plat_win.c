@@ -77,6 +77,11 @@ static DWORD WINAPI thread_entry(LPVOID p)
     return 0;
 }
 
+void plat_thread_interactive(void)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}
+
 int plat_thread_start(void (*fn)(void*), void* arg)
 {
     ThreadStart* s = (ThreadStart*)malloc(sizeof *s);

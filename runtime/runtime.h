@@ -9,7 +9,8 @@
 typedef struct RtEntry
 {
     uint32_t addr;
-    GuestFn fn;
+    GuestFn fn;     /* registers in g */
+    RtFastFn fast;  /* registers in host registers (guest.h) */
 } RtEntry;
 
 /* Translated function at a guest address, or NULL. */

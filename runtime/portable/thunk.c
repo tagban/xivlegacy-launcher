@@ -136,7 +136,7 @@ void thunk_register_at(uint32_t addr, Shim fn)
 
 int thunk_dispatch(Guest* g, uint32_t target)
 {
-    for (unsigned i = 0; i < g_nat; ++i)
+    for (unsigned i = 0; i < g_nat && target < THUNK_BASE; ++i) /* stand-ins sit in the image */
         if (g_at[i].addr == target)
         {
             g_at[i].fn(g);

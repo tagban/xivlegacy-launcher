@@ -183,6 +183,7 @@ typedef struct Obj
     G9Tex* gt;
     G9Shader* gs;
     uint32_t dirty; /* a level surface or volume written by the CPU since its last upload */
+    uint32_t ver;   /* buffers: changes with each Lock (0: not yet given one; draw_range) */
     /* state blocks */
     struct Block* block;
 } Obj;
@@ -1096,8 +1097,44 @@ static void sh_Buffer_Lock(Guest* g)
     uint32_t mem = obj_mem(b);
     if (!mem)
         RET(E_OUTOFMEMORY, 5);
+    b->ver = 0; /* written now: draw_range scans its indices again */
     wr32(ARG(3), mem + (ARG(1) < b->size ? ARG(1) : 0));
     RET(D3D_OK, 5);
+}
+
+/* The vertices a draw's indices reach (lowest, highest), remembered per index buffer and range: index
+ * buffers are mostly written once, and scanning every index of every draw was 4% of the drawing
+ * thread. An entry holds while the buffer is not locked again (Obj.ver). */
+typedef struct
+{
+    uint32_t ib, ver, start, count, isize, lo, hi;
+} IdxRange;
+#define IDX_CACHE 4096u
+static IdxRange g_idx_cache[IDX_CACHE];
+static uint32_t g_buf_ver;
+
+static void draw_range(Obj* ib, uint32_t start, uint32_t count, uint32_t isize, uint32_t* lo_out, uint32_t* hi_out)
+{
+    if (!ib->ver)
+        ib->ver = ++g_buf_ver ? g_buf_ver : ++g_buf_ver;
+    IdxRange* c = &g_idx_cache[(ib->guest * 0x9E3779B1u ^ start * 0x85EBCA6Bu ^ count * 0xC2B2AE35u) % IDX_CACHE];
+    if (c->ib == ib->guest && c->ver == ib->ver && c->start == start && c->count == count && c->isize == isize)
+    {
+        *lo_out = c->lo, *hi_out = c->hi;
+        return;
+    }
+    const uint8_t* ip = GUEST_PTR(ib->mem + start * isize);
+    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        uint32_t v = isize == 4 ? ((const uint32_t*)ip)[i] : ((const uint16_t*)ip)[i];
+        lo = v < lo ? v : lo;
+        hi = v > hi ? v : hi;
+    }
+    if (lo > hi)
+        lo = hi = 0;
+    *c = (IdxRange){ ib->guest, ib->ver, start, count, isize, lo, hi };
+    *lo_out = lo, *hi_out = hi;
 }
 
 static void sh_Buffer_Unlock(Guest* g) { RET(D3D_OK, 1); }
@@ -2182,16 +2219,8 @@ static void sh_Dev_DrawIndexedPrimitive(Guest* g)
             /* the vertices the indices actually reach: MinVertexIndex/NumVertices are hints drivers
              * ignore, and the game's are not always right (Gridania's cutscene: a copy cut to
              * NumVertices left indices past its end, triangles across the screen) */
-            const uint8_t* ip = GUEST_PTR(ib->mem + start * isize);
-            uint32_t lo = 0xFFFFFFFFu, hi = 0;
-            for (uint32_t i = 0; i < count; ++i)
-            {
-                uint32_t v = isize == 4 ? ((const uint32_t*)ip)[i] : ((const uint16_t*)ip)[i];
-                lo = v < lo ? v : lo;
-                hi = v > hi ? v : hi;
-            }
-            if (lo > hi)
-                lo = hi = 0;
+            uint32_t lo, hi;
+            draw_range(ib, start, count, isize, &lo, &hi);
             int32_t first = base + (int32_t)lo;
             if (first < 0)
                 first = 0;
