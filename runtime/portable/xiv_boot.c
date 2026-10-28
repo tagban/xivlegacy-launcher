@@ -27,6 +27,7 @@
 #include "ws2.h"
 #include "xiv_boot.h"
 #include "xiv_icon.h"
+#include "xiv_logtabs.h"
 
 #define GAME_DIR "C:\\Program Files\\SquareEnix\\FINAL FANTASY XIV"
 /* The user profile the game sees (Documents\\My Games\\..., AppData) lives in a folder of ours. */
@@ -94,6 +95,7 @@ int xiv_boot_prepare(int* argcp, char** argv)
     plat_mkdir(d);
     snprintf(d, sizeof d, "%s/Documents/My Games/FINAL FANTASY XIV/config.pad", user);
     dinput_default_pad_config(d);
+    xiv_logtabs_migrate(user);
     snprintf(d, sizeof d, "%s/ProgramData", user);
     vfs_mount("C:\\ProgramData", d);
     k32_init(GAME_DIR, GAME_DIR "\\ffxivgame.exe");
