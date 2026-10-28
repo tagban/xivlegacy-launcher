@@ -488,10 +488,12 @@ static uint32_t loading_widget(void)
     return widget;
 }
 
+static volatile int g_screen; /* the loading screen is up */
 static uint32_t loading_sleep_filter(uint32_t site, uint32_t ms)
 {
-    /* the main loop's frame limiter (0xCC6D00) */
-    return site == 0x00CC6D4Cu && ms > 1 && gt_loading() ? 1 : ms;
+    /* the main loop's frame limiter (0xCC6D00), behind the loading screen only: the game counts
+     * a held key's repeat in main loop ticks, so in a menu a tap repeated (Down moved 5 rows) */
+    return site == 0x00CC6D4Cu && ms > 1 && g_screen ? 1 : ms;
 }
 
 void xiv_loading_poll(void)
@@ -507,6 +509,7 @@ void xiv_loading_poll(void)
         return;
     uint32_t w = loading_widget();
     int screen = w && GUEST_PTR(w)[0x229] != 0;
+    g_screen = screen;
     /* Windows and lists load the same way: a window's files (Attributes: 184) go through the
      * worker chain, every step of it waiting out a drawing-thread frame, while the drawing thread
      * holds the guest lock 85% of the time. Attributes took 12 s to open. So after a tap (a key,
