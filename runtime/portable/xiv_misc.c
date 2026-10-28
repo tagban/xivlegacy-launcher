@@ -7,6 +7,7 @@
 
 #include "gthread.h"
 #include "gwin.h"
+#include "input.h"
 #include "k32.h"
 #include "pe.h"
 #include "plat.h"
@@ -467,6 +468,10 @@ static void hook_streamlog(Guest* g)
  * turn with the lock is short (gt_set_loading), workers yield without napping (SwitchToThread) and
  * the main loop does not sleep out its frame. Character select to the world: 42 s -> 12 s. */
 #define LOADING_NAP_MS 30u
+#define TAP_NS 300000000ull          /* a press held longer is walking or turning the camera */
+#define ANSWER_MIN_NS 2000000000ull  /* a tap is answered for at least this long */
+#define ANSWER_READ_NS 400000000ull  /* and then while files are read this recently */
+#define ANSWER_MAX_NS 10000000000ull
 static uint32_t loading_widget(void)
 {
     static uint32_t widget;
@@ -501,12 +506,24 @@ void xiv_loading_poll(void)
     if (!on)
         return;
     uint32_t w = loading_widget();
-    int loading = w && GUEST_PTR(w)[0x229] != 0;
+    int screen = w && GUEST_PTR(w)[0x229] != 0;
+    /* Windows and lists load the same way: a window's files (Attributes: 184) go through the
+     * worker chain, every step of it waiting out a drawing-thread frame, while the drawing thread
+     * holds the guest lock 85% of the time. Attributes took 12 s to open. So after a tap (a key,
+     * mouse or gamepad button going down and up again within TAP_NS), for at least ANSWER_MIN_NS
+     * and then as long as the files it asked for are being read, it runs as behind the loading
+     * screen. Not for a held key (walking, turning the camera), and not all the time: in the world
+     * that cost 40% of the frame rate (47 -> 29 fps). */
+    int held;
+    uint64_t now = rt_monotonic_ns(), press = input_last_press_ns(&held), read = gt_last_read_ns();
+    int answering = press && !(held && now - press > TAP_NS) && now - press < ANSWER_MAX_NS &&
+        (now - press < ANSWER_MIN_NS || (read > press && now - read < ANSWER_READ_NS));
+    int loading = screen || answering;
     if (loading != gt_loading())
     {
         gt_set_loading(loading);
         if (getenv("XIVLEGACY_LOADINGLOG"))
-            rt_log("[loading] %s\n", loading ? "screen up" : "screen down");
+            rt_log("[loading] %s\n", loading ? (screen ? "screen up" : "answering") : "off");
     }
     if (loading)
     {

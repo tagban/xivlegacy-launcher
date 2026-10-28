@@ -63,7 +63,10 @@ button is No.
 | `XIVLEGACY_VBCHECK` | log indexed draws whose indices reach past the vertex data supplied |
 | `XIVLEGACY_DUMP_SHADERS=<dir>` | every shader's bytecode, plus the pairs drawn with (`tools/msl_check.m` compiles them all) |
 | `XIVLEGACY_RECOMP_TRACE=<substring>` / `=1`, `XIVLEGACY_RECOMP_FIRSTCALLS=1` | import calls, with the calling thread (`=1` also logs failed file opens) |
-| `XIVLEGACY_SLOW_LOADING=1`, `XIVLEGACY_LOADINGLOG=1` | load at the game's own pace (no loading-screen speedups, to compare); log the loading screen going up and down |
+| `XIVLEGACY_SLOW_LOADING=1`, `XIVLEGACY_LOADINGLOG=1` | load at the game's own pace (no speedups behind the loading screen or after a tap, to compare); log them switching on and off |
+| `XIVLEGACY_LOCKSTATS=1` | every 2 s, per thread: time holding the guest lock, time waiting for it, times taken (`[lockstats]`) |
+| `XIVLEGACY_VISLOG=1` | each frame's change from the one before, with its time, read back without a stall (`[vis]`): how long the screen takes to answer input |
+| `XIVLEGACY_TRACE_WINDOW=<from>:<to>` | with `XIVLEGACY_RECOMP_TRACE`: only between those seconds after start |
 | `XIVLEGACY_LONGCALLS=<ms>` | each import call that took at least that long, with its thread and call site (what the game waits in when it looks idle) |
 | `XIVLEGACY_FILES_TRACE=1` | every file the game opens, with its handle |
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |

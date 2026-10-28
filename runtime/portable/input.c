@@ -131,6 +131,22 @@ static void push(int kind, uint32_t ofs, uint32_t data)
     g_ring[kind].seq++;
 }
 
+static volatile uint64_t g_last_press;
+static volatile uint32_t g_press_id, g_press_held; /* which control went down last (kind << 16 | code) */
+static void pressed(uint32_t id, int down)
+{
+    if (down)
+        g_press_id = id, g_press_held = 1, g_last_press = rt_monotonic_ns();
+    else if (id == g_press_id)
+        g_press_held = 0;
+}
+uint64_t input_last_press_ns(int* held)
+{
+    if (held)
+        *held = (int)g_press_held;
+    return g_last_press;
+}
+
 void input_sdl_event(const void* ev)
 {
     const SDL_Event* e = (const SDL_Event*)ev;
@@ -145,6 +161,7 @@ void input_sdl_event(const void* ev)
         uint8_t v = e->type == SDL_EVENT_KEY_DOWN ? 0x80 : 0;
         if (k && (g_keys[k] != v)) /* auto-repeat is not a DirectInput event */
         {
+            pressed(k, v != 0);
             g_keys[k] = v;
             push(INPUT_KEYBOARD, k, v);
             kind = INPUT_KEYBOARD;
@@ -179,11 +196,16 @@ void input_sdl_event(const void* ev)
         if (b >= 0)
         {
             g_buttons[b] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN ? 0x80 : 0;
+            pressed(0x10000u | (uint32_t)b, g_buttons[b] != 0);
             push(INPUT_MOUSE, 12u + (uint32_t)b, g_buttons[b]);
             kind = INPUT_MOUSE;
         }
         break;
     }
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        pressed(0x20000u | (uint32_t)e->gbutton.button, e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+        break;
     case SDL_EVENT_GAMEPAD_ADDED:
         if (!SDL_OpenGamepad(e->gdevice.which))
             rt_log("[recomp] input: cannot open gamepad: %s\n", SDL_GetError());

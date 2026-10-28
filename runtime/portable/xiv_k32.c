@@ -440,7 +440,7 @@ static void sh_SwitchToThread(Guest* g)
     uint64_t now = rt_monotonic_ns();
     streak = now - last_return < 100000u ? streak + 1 : 0;
     gt_unlock();
-    if (streak > 4 && !gt_loading()) /* behind the loading screen, the worker is what everyone waits for */
+    if (streak > 4 && !gt_loading()) /* while loading, the worker is what everyone waits for */
         plat_sleep_ms(1);
     else
         plat_yield();

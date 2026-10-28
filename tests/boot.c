@@ -695,7 +695,7 @@ static void control_thread(void* arg)
                 plat_sleep_ms(200);
                 plat_signal_threads(SIGUSR2);
             }
-            printf("[boot] control: %s\n", line);
+            printf("[boot] control: %s (t %.3f)\n", line, (double)rt_monotonic_ns() * 1e-9);
         }
         fclose(f);
     }
