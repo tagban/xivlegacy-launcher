@@ -26,6 +26,7 @@
 #include "vfs.h"
 #include "ws2.h"
 #include "xiv_boot.h"
+#include "bug_report.h"
 #include "xiv_icon.h"
 #include "xiv_logtabs.h"
 
@@ -142,6 +143,8 @@ int xiv_boot_prepare(int* argcp, char** argv)
      * read back through GetTickCount (the same clock). A placeholder session for now. */
     char arg[512];
     const char* session = (*argcp) > 2 ? argv[2] : "00000000000000000000000000000000000000000000000000000000";
+    if ((*argcp) > 2)
+        bug_report_init(argv[2]);
     uint32_t tick = (uint32_t)(rt_monotonic_ns() / 1000000u);
     if (!sqex_launch_arg(session, tick, arg, sizeof arg))
     {

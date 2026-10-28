@@ -115,6 +115,9 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
         .current_dir(&support)
         .env("XIVLEGACY_USER", &user)
         .env("XIVLEGACY_LOBBY", host)
+        // what the game's bug-report key sends with a report (runtime/portable/bug_report.c)
+        .env("XIVLEGACY_LOGS", &logs)
+        .env("XIVLEGACY_LAUNCHER_LOG", crate::config::dir().join("launcher.log"))
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     #[cfg(windows)]

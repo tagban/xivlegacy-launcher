@@ -82,6 +82,23 @@ page. Passwords you ask it to remember are kept in the macOS keychain.
 Not yet. The Windows client's graphics (wgpu on Vulkan) are the groundwork
 for a native Linux build.
 
+## Reporting a bug
+
+Something wrong in the game? Press **Ctrl+F12**, or on a controller or Steam
+Deck press **both sticks in and hold them for a second**. XIVLegacy takes a
+screenshot and sends it to the server with the end of the game's and the
+launcher's logs, then opens the chat line with `!bug ` typed for you: say what
+happened and press Enter. The server adds where your character is standing.
+You can also just type `!bug <what happened>` in chat, without the screenshot.
+
+What is sent: the screenshot, the last part of `game.log`, `game.prev.log` and
+`launcher.log`, and your screen size, with your session id and your home
+folder's name taken out. Reports go only to the server you play on; on
+`xiv.ffxi.cc` they reach the developers privately (the server needs its
+`bugreport` module on, see
+[XIVLegacy Server](https://github.com/tagban/xivlegacy-server/tree/main/modules/bugreport)).
+On Steam Deck, Steam+X brings up the keyboard for typing the note.
+
 ## The installer on its own
 
 `xivlegacy-install` is the same setup as a command-line tool (macOS, Windows,
