@@ -56,7 +56,7 @@ def report(name, rows, tick_ns=()):
         still = sum(1 for y in yaw if y < 0.01) / len(yaw)
         out.append('   turn: %.0f deg/s, per-frame speed spread %.2f, frames not turning %.0f%%' % (
             sum(yaw) / sum(dt), spread(rate), 100 * still))
-    if sum(move) / sum(dt) > 0.5 and not turning:
+    if sum(move) / sum(dt) > 0.5:
         speed = [m / t for m, t in zip(move, dt)]
         still = sum(1 for m in move if m < 1e-4) / len(move)
         out.append('   travel: %.2f units/s, per-frame speed spread %.2f, frames not moving %.0f%%' % (
