@@ -708,6 +708,19 @@ static void control_thread(void* arg)
                 plat_sleep_ms((uint32_t)atoi(line + 6));
                 gt_unlock();
             }
+            else if (!strncmp(line, "pace ", 5))
+            {
+                /* pace 0|1: the main loop's ticks in step with the frames (xiv_misc.c) */
+                extern void xiv_set_pace(int on);
+                xiv_set_pace(atoi(line + 5));
+            }
+            else if (!strncmp(line, "mark ", 5))
+            {
+                /* mark <text>: a line in the log and the motion log, to cut a measurement into parts */
+                extern void d3d9_motion_mark(const char* text);
+                rt_log("[mark] %s\n", line + 5);
+                d3d9_motion_mark(line + 5);
+            }
             else if (!strcmp(line, "findnan"))
                 find_nans();
             else if (!strncmp(line, "type ", 5))
