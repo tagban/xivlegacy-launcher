@@ -489,6 +489,87 @@ static uint32_t loading_widget(void)
 }
 
 static volatile int g_screen; /* the loading screen is up */
+
+/* Frame pacing. The game's main loop (input, the camera's controls, movement) ticks at most 30 times
+ * a second (its limiter at 0xCC6D00 sleeps out 1/30 s), and the drawing thread draws the camera as
+ * the last tick left it, with nothing in between: at 35-50 fps about half the frames showed no new
+ * tick, the rest one or two, and turning and running moved in uneven steps (tools/motion.py: per-frame
+ * turn speed spread 1.3-1.6, travel 0.9). Paced, the limiter's sleep waits for the next frame instead
+ * (at most 34 ms, so never below 30 ticks a second), and at each Present the drawing thread gives the
+ * waiting main loop its turn with the guest lock until its tick is done (with the lock's short turns
+ * one tick was otherwise cut in pieces a frame apart). Same place, same turns: per-frame turn speed
+ * spread 1.54 -> 0.97, frames that did not turn 65% -> 35%, at 8% of the frame rate (more ticks). */
+#define PACE_MAX_MS 34u
+/* the drawing thread waits at most this long for the main loop's tick to end */
+#define PACE_TICK_MAX_MS 15u
+static volatile uint32_t g_frame_gen, g_pace_waiting, g_tick_done;
+static uint32_t g_pace_seen; /* the main loop's: the frame its last tick followed */
+static int g_pace = -1;
+
+void xiv_set_pace(int on) { g_pace = on != 0; }
+
+static int pace_on(void)
+{
+    if (g_pace < 0)
+    {
+        const char* e = getenv("XIVLEGACY_FRAMEPACE"); /* =0: the game's own pace, to compare */
+        g_pace = !(e && *e == '0');
+    }
+    return g_pace;
+}
+
+static int pace_wait(uint32_t site, uint32_t ms)
+{
+    (void)ms;
+    if (site != 0x00CC6D4Cu || g_screen || !pace_on())
+        return 0;
+    /* a tick ends here: the drawing thread may go on with the next frame */
+    plat_atomic_add32(&g_tick_done, 1);
+    plat_wake_all32(&g_tick_done);
+    {
+        extern void d3d9_motion_event(char kind);
+        d3d9_motion_event('W');
+    }
+    uint32_t f = g_frame_gen;
+    if (f == g_pace_seen)
+    {
+        /* no frame since the last tick: wait for one (a futex wait may return early: wait again) */
+        uint64_t until = rt_monotonic_ns() + PACE_MAX_MS * 1000000ull;
+        g_pace_waiting = 1;
+        for (;;)
+        {
+            uint64_t now = rt_monotonic_ns();
+            if (g_frame_gen != f || now >= until)
+                break;
+            plat_wait32_ms(&g_frame_gen, f, (uint32_t)((until - now + 999999) / 1000000));
+        }
+        g_pace_waiting = 0;
+    }
+    g_pace_seen = g_frame_gen;
+    return 1;
+}
+
+void xiv_pace_frame(void)
+{
+    int waiting = g_pace_waiting && !g_screen;
+    uint32_t done = g_tick_done;
+    plat_atomic_add32(&g_frame_gen, 1);
+    plat_wake_all32(&g_frame_gen);
+    if (!waiting)
+        return;
+    /* the main loop's whole tick before the next frame: with the guest lock's short turns a tick was
+     * cut in pieces a frame apart, and each spanned two frames. Other threads take turns meanwhile. */
+    gt_unlock();
+    uint64_t until = rt_monotonic_ns() + PACE_TICK_MAX_MS * 1000000ull;
+    for (;;)
+    {
+        uint64_t now = rt_monotonic_ns();
+        if (g_tick_done != done || now >= until)
+            break;
+        plat_wait32_ms(&g_tick_done, done, (uint32_t)((until - now + 999999) / 1000000));
+    }
+    gt_lock();
+}
 static uint32_t loading_sleep_filter(uint32_t site, uint32_t ms)
 {
     /* the main loop's frame limiter (0xCC6D00), behind the loading screen only: the game counts
@@ -504,6 +585,7 @@ void xiv_loading_poll(void)
         on = getenv("XIVLEGACY_SLOW_LOADING") == NULL; /* the game's own pace, to compare */
         if (on)
             k32_sleep_filter = loading_sleep_filter;
+        k32_sleep_wait = pace_wait;
     }
     if (!on)
         return;

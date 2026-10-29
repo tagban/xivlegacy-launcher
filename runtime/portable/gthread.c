@@ -210,6 +210,11 @@ void gt_mark_main_thread(void) { t_main = 1; }
 void gt_set_loading(int on) { g_loading = on != 0; }
 int gt_loading(void) { return (int)g_loading; }
 
+unsigned gt_waiting(void)
+{
+    return g_waiters;
+}
+
 int gt_holds(void)
 {
     return t_held;

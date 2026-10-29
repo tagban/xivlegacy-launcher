@@ -618,12 +618,13 @@ static void sh_GetSystemTimeAsFileTime(Guest* g)
 }
 
 uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
+int (*k32_sleep_wait)(uint32_t site, uint32_t ms);
 
 static void sh_Sleep(Guest* g)
 {
-    uint32_t ms = ARG(0);
+    uint32_t ms = ARG(0), site = rd32(g->esp);
     if (k32_sleep_filter)
-        ms = k32_sleep_filter(rd32(g->esp), ms);
+        ms = k32_sleep_filter(site, ms);
     /* XIVLEGACY_WAITPROF: on the drawing thread, the time asked for, slept, and spent getting the
      * guest lock back, summed over 2 s (logged with the [waitprof] line) */
     int prof = thunk_timer && plat_thread_id() == thunk_prof_thread;
@@ -639,7 +640,9 @@ static void sh_Sleep(Guest* g)
         t0 = rt_monotonic_ns();
     }
 #endif
-    if (ms)
+    if (k32_sleep_wait && k32_sleep_wait(site, ms))
+        ; /* waited its own way (xiv_misc.c: the main loop waits for the next frame) */
+    else if (ms)
         plat_sleep_ms(ms);
     else
         plat_yield();

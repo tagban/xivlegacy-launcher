@@ -21,6 +21,26 @@
 #include "d3d9_structs.h"
 #include "d3d9_vtables.h"
 #include "gthread.h"
+
+/* XIVLEGACY_MOTIONLOG's file (the frame loop below), and a mark in it from the control FIFO */
+static FILE* volatile g_motion;
+void d3d9_motion_mark(const char* text)
+{
+    if (g_motion)
+        fprintf(g_motion, "# %llu %s\n", (unsigned long long)rt_monotonic_ns(), text);
+}
+/* the end of a main-loop tick (frame pacing), and other one-letter events */
+void d3d9_motion_event(char kind)
+{
+    if (g_motion)
+        fprintf(g_motion, "%c %llu\n", kind, (unsigned long long)rt_monotonic_ns());
+}
+/* a main-loop tick (its cursor read): when the game's logic and camera target moved */
+void d3d9_motion_tick(void)
+{
+    if (g_motion)
+        fprintf(g_motion, "T %llu\n", (unsigned long long)rt_monotonic_ns());
+}
 #include "gwin.h"
 #include "k32.h"
 #include "plat.h"
@@ -1570,6 +1590,37 @@ static void present(void)
     }
     xiv_game_log_poll();
     xiv_loading_poll();
+    xiv_pace_frame();
+    /* XIVLEGACY_MOTIONLOG=<file>: each presented frame, the camera as the game left it (its inverse
+     * view matrix at 0x013085A0: rows right, up, forward, position) and the main loop's ticks since
+     * the frame before: how evenly turning and running move from frame to frame (tools/motion.py) */
+    {
+        static int on = -1;
+        static uint32_t last_reads, lines;
+        FILE* f = g_motion;
+        extern volatile uint32_t u32_cursor_reads;
+        if (on < 0)
+        {
+            const char* p = getenv("XIVLEGACY_MOTIONLOG");
+            g_motion = f = p ? fopen(p, "w") : NULL;
+            on = f != NULL;
+        }
+        if (on)
+        {
+            float m[16], v[16];
+            memcpy(m, GUEST_PTR(0x013085A0u), sizeof m); /* rotation: rows right, up, forward */
+            memcpy(v, GUEST_PTR(0x01308520u), sizeof v); /* the view matrix: the eye is -(R t) */
+            float fy = m[9] < -1.0f ? -1.0f : m[9] > 1.0f ? 1.0f : m[9];
+            float ex = -(v[0] * v[12] + v[1] * v[13] + v[2] * v[14]), ey = -(v[4] * v[12] + v[5] * v[13] + v[6] * v[14]),
+                  ez = -(v[8] * v[12] + v[9] * v[13] + v[10] * v[14]);
+            uint32_t reads = u32_cursor_reads;
+            fprintf(f, "%llu %.4f %.4f %.4f %.4f %.4f %u\n", (unsigned long long)rt_monotonic_ns(), atan2f(m[8], m[10]) * 57.2957795f,
+                asinf(fy) * 57.2957795f, ex, ey, ez, reads - last_reads);
+            last_reads = reads;
+            if (++lines % 30 == 0)
+                fflush(f);
+        }
+    }
     /* XIVLEGACY_FRAMESTATS: draws and clears per frame, every 60 frames */
     {
         static int on = -1;

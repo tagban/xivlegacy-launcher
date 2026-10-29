@@ -968,8 +968,16 @@ static void sh_ScreenToClient(Guest* g)
     RET(w != NULL, 2);
 }
 
+/* GetCursorPos calls: the game's main loop reads the cursor once a tick (XIVLEGACY_MOTIONLOG) */
+volatile uint32_t u32_cursor_reads;
+
 static void sh_GetCursorPos(Guest* g)
 {
+    u32_cursor_reads++;
+    {
+        extern void d3d9_motion_tick(void);
+        d3d9_motion_tick();
+    }
     float x = 0, y = 0;
     Wnd* w = wnd(g_focus);
     if (w && g_mouse_wnd == w->hwnd)

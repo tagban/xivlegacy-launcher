@@ -43,6 +43,8 @@ void gt_note_read(uint64_t ns, uint64_t bytes);
 /* when a thread other than the drawing thread last read a file */
 uint64_t gt_last_read_ns(void);
 int gt_holds(void);
+/* threads waiting for the guest lock now */
+unsigned gt_waiting(void);
 /* While the game shows its loading screen or answers the player (xiv_loading_poll), loading comes
  * first: the drawing thread's turn with the guest lock is short. */
 void gt_set_loading(int on);
