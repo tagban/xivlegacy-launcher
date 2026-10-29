@@ -21,6 +21,26 @@
 #include "d3d9_structs.h"
 #include "d3d9_vtables.h"
 #include "gthread.h"
+
+/* XIVLEGACY_MOTIONLOG's file (the frame loop below), and a mark in it from the control FIFO */
+static FILE* volatile g_motion;
+void d3d9_motion_mark(const char* text)
+{
+    if (g_motion)
+        fprintf(g_motion, "# %llu %s\n", (unsigned long long)rt_monotonic_ns(), text);
+}
+/* the end of a main-loop tick (frame pacing), and other one-letter events */
+void d3d9_motion_event(char kind)
+{
+    if (g_motion)
+        fprintf(g_motion, "%c %llu\n", kind, (unsigned long long)rt_monotonic_ns());
+}
+/* a main-loop tick (its cursor read): when the game's logic and camera target moved */
+void d3d9_motion_tick(void)
+{
+    if (g_motion)
+        fprintf(g_motion, "T %llu\n", (unsigned long long)rt_monotonic_ns());
+}
 #include "gwin.h"
 #include "k32.h"
 #include "plat.h"
@@ -183,6 +203,8 @@ typedef struct Obj
     G9Tex* gt;
     G9Shader* gs;
     uint32_t dirty; /* a level surface or volume written by the CPU since its last upload */
+    uint32_t ver;   /* buffers: changes with each Lock (0: not yet given one; draw_range) */
+    uint32_t drawn_whole, relocks; /* buffers: drawn from the back end's own copy; locked again since */
     /* state blocks */
     struct Block* block;
 } Obj;
@@ -295,6 +317,8 @@ static void obj_free(Obj* o)
         }
     if (o->mem)
         gheap_free(o->mem);
+    if (o->drawn_whole)
+        g9_buffer_forget(o->guest);
     g9_tex_destroy(o->gt);
     g9_shader_destroy(o->gs);
     free(o->data);
@@ -1096,8 +1120,51 @@ static void sh_Buffer_Lock(Guest* g)
     uint32_t mem = obj_mem(b);
     if (!mem)
         RET(E_OUTOFMEMORY, 5);
+    b->ver = 0; /* written now: draw_range scans its indices again, the back end copies it again */
+    b->relocks += b->drawn_whole != 0;
     wr32(ARG(3), mem + (ARG(1) < b->size ? ARG(1) : 0));
     RET(D3D_OK, 5);
+}
+
+/* The vertices a draw's indices reach (lowest, highest), remembered per index buffer and range: index
+ * buffers are mostly written once, and scanning every index of every draw was 4% of the drawing
+ * thread. An entry holds while the buffer is not locked again (Obj.ver). */
+typedef struct
+{
+    uint32_t ib, ver, start, count, isize, lo, hi;
+} IdxRange;
+#define IDX_CACHE 4096u
+static IdxRange g_idx_cache[IDX_CACHE];
+static uint32_t g_buf_ver;
+
+static uint32_t buf_ver(Obj* b)
+{
+    if (!b->ver)
+        b->ver = ++g_buf_ver ? g_buf_ver : ++g_buf_ver;
+    return b->ver;
+}
+
+static void draw_range(Obj* ib, uint32_t start, uint32_t count, uint32_t isize, uint32_t* lo_out, uint32_t* hi_out)
+{
+    buf_ver(ib);
+    IdxRange* c = &g_idx_cache[(ib->guest * 0x9E3779B1u ^ start * 0x85EBCA6Bu ^ count * 0xC2B2AE35u) % IDX_CACHE];
+    if (c->ib == ib->guest && c->ver == ib->ver && c->start == start && c->count == count && c->isize == isize)
+    {
+        *lo_out = c->lo, *hi_out = c->hi;
+        return;
+    }
+    const uint8_t* ip = GUEST_PTR(ib->mem + start * isize);
+    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        uint32_t v = isize == 4 ? ((const uint32_t*)ip)[i] : ((const uint16_t*)ip)[i];
+        lo = v < lo ? v : lo;
+        hi = v > hi ? v : hi;
+    }
+    if (lo > hi)
+        lo = hi = 0;
+    *c = (IdxRange){ ib->guest, ib->ver, start, count, isize, lo, hi };
+    *lo_out = lo, *hi_out = hi;
 }
 
 static void sh_Buffer_Unlock(Guest* g) { RET(D3D_OK, 1); }
@@ -1366,6 +1433,45 @@ static int draw_state(G9Draw* d, uint32_t prim, uint32_t prims)
     return 1;
 }
 
+/* A buffer the back end may keep whole (g9_persistent): made without D3DUSAGE_DYNAMIC, and not one
+ * the game keeps writing anyway (each write is a new copy). */
+static int whole_ok(Obj* b)
+{
+    return !(b->usage & 0x200u) && b->relocks < 4;
+}
+
+/* An indexed draw from the buffers whole, with its own base vertex: no vertices or indices copied,
+ * no index scan. 0 if a buffer is dynamic or an offset not 4-byte aligned (Metal's rule). */
+static int whole_draw(G9Draw* d, Obj* ib, uint32_t start, uint32_t isize)
+{
+    State* st = &g_dev->s;
+    if (!g9_persistent() || !whole_ok(ib) || (start * isize) % 4)
+        return 0;
+    for (int i = 0; i < 16; ++i)
+    {
+        Obj* vb = obj(st->stream[i]);
+        if (vb && obj_mem(vb) && st->stream_off[i] < vb->size && (!whole_ok(vb) || st->stream_off[i] % 4))
+            return 0;
+    }
+    for (int i = 0; i < 16; ++i)
+    {
+        Obj* vb = obj(st->stream[i]);
+        uint32_t mem = vb ? obj_mem(vb) : 0, off = st->stream_off[i];
+        if (!mem || off >= vb->size)
+            continue;
+        int inst = (st->stream_freq[i] & 0x80000000u) != 0;
+        d->streams[i] = (G9Stream){ GUEST_PTR(mem + off), vb->size - off, st->stream_stride[i], inst ? (st->stream_freq[i] & 0x7FFFFFFFu) : 0,
+            vb->guest, buf_ver(vb), off, vb->size, GUEST_PTR(mem) };
+        vb->drawn_whole = 1;
+    }
+    d->ikey = ib->guest, d->iver = buf_ver(ib), d->ioffset = start * isize, d->iwhole_size = ib->size;
+    d->iwhole = GUEST_PTR(obj_mem(ib));
+    d->indices = GUEST_PTR(ib->mem + start * isize);
+    d->index_size = isize;
+    ib->drawn_whole = 1;
+    return 1;
+}
+
 /* the bound streams from vertex `first`, `count` vertices (instanced streams: every instance) */
 static void stream_range(G9Draw* d, uint32_t first, uint32_t count)
 {
@@ -1570,6 +1676,37 @@ static void present(void)
     }
     xiv_game_log_poll();
     xiv_loading_poll();
+    xiv_pace_frame();
+    /* XIVLEGACY_MOTIONLOG=<file>: each presented frame, the camera as the game left it (its inverse
+     * view matrix at 0x013085A0: rows right, up, forward, position) and the main loop's ticks since
+     * the frame before: how evenly turning and running move from frame to frame (tools/motion.py) */
+    {
+        static int on = -1;
+        static uint32_t last_reads, lines;
+        FILE* f = g_motion;
+        extern volatile uint32_t u32_cursor_reads;
+        if (on < 0)
+        {
+            const char* p = getenv("XIVLEGACY_MOTIONLOG");
+            g_motion = f = p ? fopen(p, "w") : NULL;
+            on = f != NULL;
+        }
+        if (on)
+        {
+            float m[16], v[16];
+            memcpy(m, GUEST_PTR(0x013085A0u), sizeof m); /* rotation: rows right, up, forward */
+            memcpy(v, GUEST_PTR(0x01308520u), sizeof v); /* the view matrix: the eye is -(R t) */
+            float fy = m[9] < -1.0f ? -1.0f : m[9] > 1.0f ? 1.0f : m[9];
+            float ex = -(v[0] * v[12] + v[1] * v[13] + v[2] * v[14]), ey = -(v[4] * v[12] + v[5] * v[13] + v[6] * v[14]),
+                  ez = -(v[8] * v[12] + v[9] * v[13] + v[10] * v[14]);
+            uint32_t reads = u32_cursor_reads;
+            fprintf(f, "%llu %.4f %.4f %.4f %.4f %.4f %u\n", (unsigned long long)rt_monotonic_ns(), atan2f(m[8], m[10]) * 57.2957795f,
+                asinf(fy) * 57.2957795f, ex, ey, ez, reads - last_reads);
+            last_reads = reads;
+            if (++lines % 30 == 0)
+                fflush(f);
+        }
+    }
     /* XIVLEGACY_FRAMESTATS: draws and clears per frame, every 60 frames */
     {
         static int on = -1;
@@ -2177,21 +2314,18 @@ static void sh_Dev_DrawIndexedPrimitive(Guest* g)
         int32_t base = (int32_t)ARG(2);
         uint32_t start = ARG(5), isize = ib->fmt == FMT_INDEX32 ? 4 : 2;
         uint32_t count = prim_vertices(ARG(1), ARG(6));
-        if ((uint64_t)(start + count) * isize <= ib->size)
+        if ((uint64_t)(start + count) * isize <= ib->size && base >= 0 && whole_draw(&d, ib, start, isize))
+        {
+            d.base_vertex = base;
+            g9_draw(&d);
+        }
+        else if ((uint64_t)(start + count) * isize <= ib->size)
         {
             /* the vertices the indices actually reach: MinVertexIndex/NumVertices are hints drivers
              * ignore, and the game's are not always right (Gridania's cutscene: a copy cut to
              * NumVertices left indices past its end, triangles across the screen) */
-            const uint8_t* ip = GUEST_PTR(ib->mem + start * isize);
-            uint32_t lo = 0xFFFFFFFFu, hi = 0;
-            for (uint32_t i = 0; i < count; ++i)
-            {
-                uint32_t v = isize == 4 ? ((const uint32_t*)ip)[i] : ((const uint16_t*)ip)[i];
-                lo = v < lo ? v : lo;
-                hi = v > hi ? v : hi;
-            }
-            if (lo > hi)
-                lo = hi = 0;
+            uint32_t lo, hi;
+            draw_range(ib, start, count, isize, &lo, &hi);
             int32_t first = base + (int32_t)lo;
             if (first < 0)
                 first = 0;

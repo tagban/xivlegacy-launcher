@@ -36,6 +36,11 @@ void xiv_game_log_poll(void);  /* xiv_misc.c: each frame (XIVLEGACY_GAMELOG) */
 void xiv_loading_poll(void);   /* xiv_misc.c: each frame, on the drawing thread */
 /* k32.c: when set, the time a Sleep sleeps, given its call site and the time asked for */
 extern uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
+/* Sleep's wait, without the guest lock: nonzero when it waited (instead of sleeping ms) */
+extern int (*k32_sleep_wait)(uint32_t site, uint32_t ms);
+/* xiv_misc.c: the drawing thread presented a frame (frame pacing); its switch for tests */
+void xiv_pace_frame(void);
+void xiv_set_pace(int on);
 /* d3d9.c: Direct3D 9 (in progress). */
 void d3d9_init(void);
 void d3dx9_init(void);

@@ -4,7 +4,9 @@
  *     { X128 d = <dst>, s = <src>; d = sse_<op>(d, s[, imm]); <dst> = d; }
  * with XMM registers in g->xmm[n], MMX registers in g->mm[n] (widened to X128 for the
  * shared integer helpers, low 64 bits kept), and memory read and written through the guest's
- * rd/wr accessors. Plain C, no host intrinsics: the host may be ARM or x86-64.
+ * rd/wr accessors. No host intrinsics: the host may be ARM or x86-64. With clang (X128_VEC) the
+ * register is also a 128-bit vector, so packed operations compile to one NEON/SSE instruction and
+ * the value stays in a vector register; elsewhere they are loops over the lanes.
  *
  * Rounding: conversions that round (cvtss2si, cvtps2dq, ...) honour MXCSR.RC; the
  * arithmetic itself runs in the host's default round-to-nearest, which is what the game sets.
@@ -21,7 +23,29 @@
 #define RT_INLINE static inline __attribute__((always_inline))
 #endif
 
+#if defined(__clang__) && !defined(X128_NO_VEC)
+#define X128_VEC 1
+/* aligned(8): the union keeps the layout and alignment it had without them */
+#define X128_V(T, n) T __attribute__((vector_size(n), aligned(8)))
+typedef X128_V(float, 16) x_v4f;
+typedef X128_V(float, 8) x_v2f;
+typedef X128_V(double, 16) x_v2d;
+typedef X128_V(uint32_t, 16) x_v4u;
+typedef X128_V(int32_t, 16) x_v4i;
+typedef X128_V(int32_t, 8) x_v2i;
+typedef X128_V(uint64_t, 16) x_v2q;
+typedef X128_V(int64_t, 16) x_v2sq;
+#endif
+
 typedef union X128 {
+#ifdef X128_VEC
+    x_v4f vf;
+    x_v2d vd;
+    x_v4u vu;
+    x_v4i vi;
+    x_v2q vq;
+    x_v2sq vsq;
+#endif
     float f[4];
     double d[2];
     uint64_t q[2];
@@ -40,9 +64,24 @@ RT_INLINE X128 x_u(uint32_t lo) { X128 r = x_zero(); r.u[0] = lo; return r; }
 
 RT_INLINE X128 x_q2(uint64_t lo, uint64_t hi) { X128 r; r.q[0] = lo; r.q[1] = hi; return r; }
 
-/* 128-bit guest memory, through the guest's rd64/wr64 (defined by guest.h before use). */
+/* 128-bit guest memory, through the guest's rd64/wr64 (defined by guest.h before use); with
+ * vectors one 16-byte access (GUEST_PTR), the halves as wrapping 32-bit addresses otherwise */
+#ifdef X128_VEC
+RT_INLINE X128 x_rd128_(const void* p) { X128 r; memcpy(&r, p, 16); return r; }
+#define x_rd128(a) (((uint32_t)(a) <= 0xFFFFFFF0u) ? x_rd128_(GUEST_PTR(a)) : x_q2(rd64(a), rd64((uint32_t)((a) + 8u))))
+#define x_wr128(a, v) do { X128 v_ = (v); uint32_t a_ = (a); \
+    if (a_ <= 0xFFFFFFF0u) memcpy(GUEST_PTR(a_), &v_, 16); else { wr64(a_, v_.q[0]); wr64((uint32_t)(a_ + 8u), v_.q[1]); } } while (0)
+#else
 #define x_rd128(a) x_q2(rd64(a), rd64((uint32_t)((a) + 8u)))
 #define x_wr128(a, v) do { X128 v_ = (v); wr64((a), v_.q[0]); wr64((uint32_t)((a) + 8u), v_.q[1]); } while (0)
+#endif
+
+#define x_rdp128(p) x_q2(rdp64(p), rdp64((p) + 8))
+#define x_wrp128(p, v) do { X128 v_ = (v); memcpy((p), &v_, 16); } while (0)
+#ifdef X128_VEC
+#undef x_rdp128
+#define x_rdp128(p) x_rd128_(p)
+#endif
 
 #define MXCSR_DEFAULT 0x1F80u
 
@@ -55,6 +94,39 @@ RT_INLINE X128 x_q2(uint64_t lo, uint64_t hi) { X128 r; r.q[0] = lo; r.q[1] = hi
     RT_INLINE X128 sse_##name##pd(X128 d, X128 s) { for (int k = 0; k < 2; k++) { double a = d.d[k], b = s.d[k]; (void)a; d.d[k] = (expr); } return d; } \
     RT_INLINE X128 sse_##name##sd(X128 d, X128 s) { double a = d.d[0], b = s.d[0]; (void)a; d.d[0] = (expr); return d; }
 
+#ifdef X128_VEC
+/* packed: whole vectors (the scalar forms stay on lane 0) */
+#define SSE_PS_V(name, vexpr, expr) \
+    RT_INLINE X128 sse_##name##ps(X128 d, X128 s) { x_v4f a = d.vf, b = s.vf; (void)a; d.vf = (vexpr); return d; } \
+    RT_INLINE X128 sse_##name##ss(X128 d, X128 s) { float a = d.f[0], b = s.f[0]; (void)a; d.f[0] = (expr); return d; }
+#define SSE_PD_V(name, vexpr, expr) \
+    RT_INLINE X128 sse_##name##pd(X128 d, X128 s) { x_v2d a = d.vd, b = s.vd; (void)a; d.vd = (vexpr); return d; } \
+    RT_INLINE X128 sse_##name##sd(X128 d, X128 s) { double a = d.d[0], b = s.d[0]; (void)a; d.d[0] = (expr); return d; }
+/* a lane mask (all ones where true) choosing between two vectors */
+#define X128_SEL(T, m, x, y) ((T)(((x_v4u)(m) & (x_v4u)(x)) | (~(x_v4u)(m) & (x_v4u)(y))))
+SSE_PS_V(add, a + b, a + b)
+SSE_PS_V(sub, a - b, a - b)
+SSE_PS_V(mul, a * b, a * b)
+SSE_PS_V(div, a / b, a / b)
+/* MINPS/MAXPS: the second operand when either is NaN or both are zero. */
+SSE_PS_V(min, X128_SEL(x_v4f, a < b, a, b), a < b ? a : b)
+SSE_PS_V(max, X128_SEL(x_v4f, a > b, a, b), a > b ? a : b)
+#if __has_builtin(__builtin_elementwise_sqrt)
+SSE_PS_V(sqrt, __builtin_elementwise_sqrt(b), sqrtf(b))
+SSE_PS_V(rsqrt, 1.0f / __builtin_elementwise_sqrt(b), 1.0f / sqrtf(b))
+#else
+SSE_PS(sqrt, sqrtf(b))
+SSE_PS(rsqrt, 1.0f / sqrtf(b))
+#endif
+SSE_PS_V(rcp, 1.0f / b, 1.0f / b)
+SSE_PD_V(add, a + b, a + b)
+SSE_PD_V(sub, a - b, a - b)
+SSE_PD_V(mul, a * b, a * b)
+SSE_PD_V(div, a / b, a / b)
+SSE_PD_V(min, X128_SEL(x_v2d, a < b, a, b), a < b ? a : b)
+SSE_PD_V(max, X128_SEL(x_v2d, a > b, a, b), a > b ? a : b)
+SSE_PD(sqrt, sqrt(b))
+#else
 SSE_PS(add, a + b)
 SSE_PS(sub, a - b)
 SSE_PS(mul, a * b)
@@ -72,13 +144,21 @@ SSE_PD(div, a / b)
 SSE_PD(min, a < b ? a : b)
 SSE_PD(max, a > b ? a : b)
 SSE_PD(sqrt, sqrt(b))
+#endif
 
 /* ---------------------------------------------------------------- logic (bitwise on 128 bits) */
 
+#ifdef X128_VEC
+RT_INLINE X128 sse_and(X128 d, X128 s) { d.vq &= s.vq; return d; }
+RT_INLINE X128 sse_andn(X128 d, X128 s) { d.vq = ~d.vq & s.vq; return d; }
+RT_INLINE X128 sse_or(X128 d, X128 s) { d.vq |= s.vq; return d; }
+RT_INLINE X128 sse_xor(X128 d, X128 s) { d.vq ^= s.vq; return d; }
+#else
 RT_INLINE X128 sse_and(X128 d, X128 s) { d.q[0] &= s.q[0]; d.q[1] &= s.q[1]; return d; }
 RT_INLINE X128 sse_andn(X128 d, X128 s) { d.q[0] = ~d.q[0] & s.q[0]; d.q[1] = ~d.q[1] & s.q[1]; return d; }
 RT_INLINE X128 sse_or(X128 d, X128 s) { d.q[0] |= s.q[0]; d.q[1] |= s.q[1]; return d; }
 RT_INLINE X128 sse_xor(X128 d, X128 s) { d.q[0] ^= s.q[0]; d.q[1] ^= s.q[1]; return d; }
+#endif
 
 /* ---------------------------------------------------------------- compares */
 
@@ -96,7 +176,27 @@ RT_INLINE int cmp_pred_f(double a, double b, int p) {
     default: return !un;
     }
 }
+#ifdef X128_VEC
+/* the predicate is an immediate: one compare after inlining. IEEE != is true when unordered. */
+RT_INLINE X128 sse_cmpps(X128 d, X128 s, int p) {
+    x_v4f a = d.vf, b = s.vf;
+    x_v4i m;
+    switch (p & 7) {
+    case 0: m = a == b; break;
+    case 1: m = a < b; break;
+    case 2: m = a <= b; break;
+    case 3: m = (a != a) | (b != b); break;
+    case 4: m = a != b; break;
+    case 5: m = ~(a < b); break;
+    case 6: m = ~(a <= b); break;
+    default: m = (a == a) & (b == b); break;
+    }
+    d.vi = m;
+    return d;
+}
+#else
 RT_INLINE X128 sse_cmpps(X128 d, X128 s, int p) { for (int k = 0; k < 4; k++) d.u[k] = cmp_pred_f(d.f[k], s.f[k], p) ? 0xFFFFFFFFu : 0; return d; }
+#endif
 RT_INLINE X128 sse_cmpss(X128 d, X128 s, int p) { d.u[0] = cmp_pred_f(d.f[0], s.f[0], p) ? 0xFFFFFFFFu : 0; return d; }
 RT_INLINE X128 sse_cmppd(X128 d, X128 s, int p) { for (int k = 0; k < 2; k++) d.q[k] = cmp_pred_f(d.d[k], s.d[k], p) ? ~0ull : 0; return d; }
 RT_INLINE X128 sse_cmpsd(X128 d, X128 s, int p) { d.q[0] = cmp_pred_f(d.d[0], s.d[0], p) ? ~0ull : 0; return d; }
@@ -122,11 +222,25 @@ RT_INLINE int32_t sse_i32(double x) { return (x != x || x >= 2147483648.0 || x <
 RT_INLINE int32_t sse_cvt_i32(uint32_t mxcsr, double x) { return sse_i32(sse_round(mxcsr, x)); }
 RT_INLINE int32_t sse_cvtt_i32(double x) { return sse_i32(trunc(x)); }
 
+#ifdef X128_VEC
+RT_INLINE X128 sse_cvtps2pd(X128 d, X128 s) {
+    (void)d; X128 r; r.vd = __builtin_convertvector(__builtin_shufflevector(s.vf, s.vf, 0, 1), x_v2d); return r;
+}
+RT_INLINE X128 sse_cvtpd2ps(X128 d, X128 s) {
+    (void)d; X128 r; x_v2f lo = __builtin_convertvector(s.vd, x_v2f);
+    r.vf = __builtin_shufflevector(lo, (x_v2f){ 0.0f, 0.0f }, 0, 1, 2, 3); return r;
+}
+#else
 RT_INLINE X128 sse_cvtps2pd(X128 d, X128 s) { (void)d; X128 r; r.d[0] = s.f[0]; r.d[1] = s.f[1]; return r; }
 RT_INLINE X128 sse_cvtpd2ps(X128 d, X128 s) { (void)d; X128 r = x_zero(); r.f[0] = (float)s.d[0]; r.f[1] = (float)s.d[1]; return r; }
+#endif
 RT_INLINE X128 sse_cvtss2sd(X128 d, X128 s) { d.d[0] = s.f[0]; return d; }
 RT_INLINE X128 sse_cvtsd2ss(X128 d, X128 s) { d.f[0] = (float)s.d[0]; return d; }
+#ifdef X128_VEC
+RT_INLINE X128 sse_cvtdq2ps(X128 d, X128 s) { d.vf = __builtin_convertvector(s.vi, x_v4f); return d; }
+#else
 RT_INLINE X128 sse_cvtdq2ps(X128 d, X128 s) { (void)d; for (int k = 0; k < 4; k++) d.f[k] = (float)s.i[k]; return d; }
+#endif
 RT_INLINE X128 sse_cvtdq2pd(X128 d, X128 s) { (void)d; X128 r; r.d[0] = s.i[0]; r.d[1] = s.i[1]; return r; }
 RT_INLINE X128 sse_cvtps2dq(uint32_t mx, X128 d, X128 s) { (void)d; for (int k = 0; k < 4; k++) d.i[k] = sse_cvt_i32(mx, s.f[k]); return d; }
 RT_INLINE X128 sse_cvttps2dq(X128 d, X128 s) { (void)d; for (int k = 0; k < 4; k++) d.i[k] = sse_cvtt_i32(s.f[k]); return d; }
@@ -140,6 +254,12 @@ RT_INLINE X128 sse_cvttps2pi(X128 d, X128 s) { (void)d; X128 r = x_zero(); r.i[0
 RT_INLINE X128 sse_shufps(X128 d, X128 s, int m) {
     X128 r; r.f[0] = d.f[m & 3]; r.f[1] = d.f[(m >> 2) & 3]; r.f[2] = s.f[(m >> 4) & 3]; r.f[3] = s.f[(m >> 6) & 3]; return r;
 }
+#ifdef X128_VEC
+/* the translation passes the immediate as a literal: one shuffle (a statement expression, so m
+ * stays an integer constant expression) */
+#define sse_shufps(d, s, m) ({ X128 d_ = (d), s_ = (s), r_; \
+    r_.vf = __builtin_shufflevector(d_.vf, s_.vf, (m) & 3, ((m) >> 2) & 3, 4 + (((m) >> 4) & 3), 4 + (((m) >> 6) & 3)); r_; })
+#endif
 RT_INLINE X128 sse_shufpd(X128 d, X128 s, int m) { X128 r; r.d[0] = d.d[m & 1]; r.d[1] = s.d[(m >> 1) & 1]; return r; }
 RT_INLINE X128 sse_pshufd(X128 d, X128 s, int m) {
     (void)d; X128 r; for (int k = 0; k < 4; k++) r.u[k] = s.u[(m >> (2 * k)) & 3]; return r;
@@ -148,12 +268,21 @@ RT_INLINE X128 sse_pshufd(X128 d, X128 s, int m) {
 RT_INLINE X128 sse_pshufw(X128 d, X128 s, int m) {
     (void)d; X128 r = x_zero(); for (int k = 0; k < 4; k++) r.w[k] = s.w[(m >> (2 * k)) & 3]; return r;
 }
+#ifdef X128_VEC
+RT_INLINE X128 sse_unpcklps(X128 d, X128 s) { X128 r; r.vf = __builtin_shufflevector(d.vf, s.vf, 0, 4, 1, 5); return r; }
+RT_INLINE X128 sse_unpckhps(X128 d, X128 s) { X128 r; r.vf = __builtin_shufflevector(d.vf, s.vf, 2, 6, 3, 7); return r; }
+RT_INLINE X128 sse_unpcklpd(X128 d, X128 s) { X128 r; r.vq = __builtin_shufflevector(d.vq, s.vq, 0, 2); return r; }
+RT_INLINE X128 sse_unpckhpd(X128 d, X128 s) { X128 r; r.vq = __builtin_shufflevector(d.vq, s.vq, 1, 3); return r; }
+RT_INLINE X128 sse_movlhps(X128 d, X128 s) { d.vq = __builtin_shufflevector(d.vq, s.vq, 0, 2); return d; }
+RT_INLINE X128 sse_movhlps(X128 d, X128 s) { d.vq = __builtin_shufflevector(d.vq, s.vq, 3, 1); return d; }
+#else
 RT_INLINE X128 sse_unpcklps(X128 d, X128 s) { X128 r; r.f[0] = d.f[0]; r.f[1] = s.f[0]; r.f[2] = d.f[1]; r.f[3] = s.f[1]; return r; }
 RT_INLINE X128 sse_unpckhps(X128 d, X128 s) { X128 r; r.f[0] = d.f[2]; r.f[1] = s.f[2]; r.f[2] = d.f[3]; r.f[3] = s.f[3]; return r; }
 RT_INLINE X128 sse_unpcklpd(X128 d, X128 s) { X128 r; r.q[0] = d.q[0]; r.q[1] = s.q[0]; return r; }
 RT_INLINE X128 sse_unpckhpd(X128 d, X128 s) { X128 r; r.q[0] = d.q[1]; r.q[1] = s.q[1]; return r; }
 RT_INLINE X128 sse_movlhps(X128 d, X128 s) { d.q[1] = s.q[0]; return d; }
 RT_INLINE X128 sse_movhlps(X128 d, X128 s) { d.q[0] = s.q[1]; return d; }
+#endif
 
 /* PUNPCKL*: interleave the low halves. `half` is the register's byte width / 2 (8 for XMM,
  * 4 for MMX); for MMX only the low 8 result bytes are kept by the caller. */
@@ -227,6 +356,21 @@ SSE_LANES(pcmpgtw, int16_t, sw, a > b ? -1 : 0)
 SSE_LANES(pcmpgtd, int32_t, i, a > b ? -1 : 0)
 SSE_LANES(pavgb, uint8_t, b, (a + b + 1) >> 1)
 SSE_LANES(pavgw, uint16_t, w, (a + b + 1) >> 1)
+
+#ifdef X128_VEC
+#undef X128_LANEOP
+#define X128_LANEOP(name, field, op) RT_INLINE X128 sse_##name##_v(X128 d, X128 s) { d.field = d.field op s.field; return d; }
+X128_LANEOP(paddd, vu, +)
+X128_LANEOP(paddq, vq, +)
+X128_LANEOP(psubd, vu, -)
+X128_LANEOP(psubq, vq, -)
+#define sse_paddd sse_paddd_v
+#define sse_paddq sse_paddq_v
+#define sse_psubd sse_psubd_v
+#define sse_psubq sse_psubq_v
+RT_INLINE X128 sse_pcmpeqd_v(X128 d, X128 s) { d.vi = d.vu == s.vu; return d; }
+#define sse_pcmpeqd sse_pcmpeqd_v
+#endif
 
 /* PMULUDQ: low dword of each qword, unsigned, to a qword. */
 RT_INLINE X128 sse_pmuludq(X128 d, X128 s) {

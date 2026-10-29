@@ -29,6 +29,8 @@ void rt_safepoint(void) { g_host.safepoint(); }
 
 static void set_host(const XivHostFns* fns) { g_host = *fns; }
 
+#include "rt_fastcall.h"
+
 extern GuestFn rt_hook_streamlog;
 
 XIV_EXPORT const XivGameModule xiv_game_module = {

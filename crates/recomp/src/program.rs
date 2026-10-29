@@ -38,6 +38,10 @@ pub struct Program {
     /// the entries that are the C library's _setjmp3, and its longjmp
     pub setjmps: HashSet<u64>,
     pub longjmps: HashSet<u64>,
+    /// the functions whose returns must store the flags (recomp.rs flags_after_return); None: all
+    pub flags_out: Option<HashSet<u64>>,
+    /// the functions that read the flags at their entry (recomp.rs); None: all
+    pub flags_in: Option<HashSet<u64>>,
     text: (u64, u64),
     tables: HashSet<u64>,
     boundaries: HashMap<u64, HashSet<u64>>,
@@ -120,7 +124,7 @@ impl Program {
         let mut p = Program {
             base, image: pe.memory_mapped_image(), prefix: prefix.to_string(), entries: functions.keys().copied().collect(),
             functions, switches, hooks, relocs: HashSet::new(), inner: HashSet::new(), setjmps: HashSet::new(),
-            longjmps: HashSet::new(), text, tables, boundaries: HashMap::new(),
+            longjmps: HashSet::new(), flags_out: None, flags_in: None, text, tables, boundaries: HashMap::new(),
         };
         p.relocs = p.text_relocations(pe)?;
         let mut md = Disasm::new(true);
@@ -374,6 +378,11 @@ impl Program {
     ///
     /// The base-relocation blocks at the start of .reloc, up to the first block past .text or of
     /// size 0.
+    /// The executable section's range (.text).
+    pub fn text_range(&self) -> (u64, u64) {
+        self.text
+    }
+
     fn text_relocations(&self, pe: &Pe) -> Result<HashSet<u64>, Error> {
         // A fixed-base image (ffxivgame.exe) has no .reloc: nothing moves, and every address
         // constant is used as is.

@@ -14,7 +14,7 @@
 
 #include "runtime.h"
 
-#define XIV_GAME_ABI 1
+#define XIV_GAME_ABI 2 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs) */
 
 typedef struct XivHostFns
 {

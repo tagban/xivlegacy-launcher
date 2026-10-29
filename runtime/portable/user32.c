@@ -111,6 +111,19 @@ static void shown(const Wnd* w, int* sw, int* sh)
  * game's w x h): what GetCursorPos answers while that window has focus */
 static uint32_t g_mouse_wnd;
 static int g_mouse_x, g_mouse_y;
+/* the mouse buttons held, as the events so far left them (scripted presses included) */
+static SDL_MouseButtonFlags g_held;
+/* The camera drag: while a button is held the game puts the pointer back where the press began
+ * every tick (SetCursorPos) and turns by how far it got since. Moving the real cursor each time
+ * shook the camera: macOS still delivers motion from before the move, at its old position, so the
+ * same motion turned the camera twice, and in a window shown at another size the move landed off
+ * the press point, a turn of its own every tick. So from the game's first SetCursorPos with a
+ * button held until the buttons are up, the pointer is the game's alone: the window takes relative
+ * motion, g_pin_fx/fy (g_mouse_x/y with their fractions) move by it, and the real cursor stays
+ * hidden where it was, coming back at the game's pointer. */
+static int g_pinned;
+static uint32_t g_pin_wnd;
+static float g_pin_fx, g_pin_fy;
 
 static int to_game_x(const Wnd* w, float x)
 {
@@ -119,6 +132,28 @@ static int to_game_x(const Wnd* w, float x)
 static int to_game_y(const Wnd* w, float y)
 {
     return w->sh > 0 ? (int)(y * (float)w->h / (float)w->sh) : (int)y;
+}
+/* the middle of a pixel of the game's w x h, in the shown window */
+static float to_shown_x(const Wnd* w, int x)
+{
+    return ((float)x + 0.5f) * (w->sw > 0 ? (float)w->sw / (float)w->w : 1.0f);
+}
+static float to_shown_y(const Wnd* w, int y)
+{
+    return ((float)y + 0.5f) * (w->sh > 0 ? (float)w->sh / (float)w->h : 1.0f);
+}
+
+/* the camera drag is over: the real cursor comes back where the game's pointer is */
+static void unpin(void)
+{
+    if (!g_pinned)
+        return;
+    g_pinned = 0;
+    Wnd* w = wnd(g_pin_wnd);
+    if (!w || !w->sdl)
+        return;
+    SDL_WarpMouseInWindow(w->sdl, to_shown_x(w, g_mouse_x), to_shown_y(w, g_mouse_y));
+    SDL_SetWindowRelativeMouseMode(w->sdl, false);
 }
 
 static Wnd* wnd_of_sdl(SDL_WindowID id)
@@ -144,6 +179,8 @@ static void sdl_up(void)
      * (it starts SDL first, with the player's choice) */
     if (!SDL_GetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES))
         SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
+    /* a camera drag (g_pinned) turns as far as the pointer would have moved */
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD))
         rt_log("[recomp] SDL_Init: %s\n", SDL_GetError());
     g_sdl_up = 1;
@@ -566,6 +603,15 @@ static void pump(void)
             if (w)
             {
                 int x = to_game_x(w, e.motion.x), y = to_game_y(w, e.motion.y);
+                if (g_pinned && w->hwnd == g_pin_wnd)
+                {
+                    /* a camera drag: the game's pointer moves by the motion, within the window */
+                    int sw, sh;
+                    shown(w, &sw, &sh);
+                    g_pin_fx = SDL_clamp(g_pin_fx + e.motion.xrel * (float)w->w / (float)sw, 0.0f, (float)w->w - 0.01f);
+                    g_pin_fy = SDL_clamp(g_pin_fy + e.motion.yrel * (float)w->h / (float)sh, 0.0f, (float)w->h - 0.01f);
+                    x = (int)g_pin_fx, y = (int)g_pin_fy;
+                }
                 g_mouse_wnd = w->hwnd, g_mouse_x = x, g_mouse_y = y;
                 post(w->tid, w->hwnd, WM_MOUSEMOVE, mouse_keys(e.motion.state),
                     ((uint32_t)(uint16_t)y << 16) | (uint16_t)x);
@@ -585,19 +631,29 @@ static void pump(void)
             if (!msg)
                 break;
             int bx = to_game_x(w, e.button.x), by = to_game_y(w, e.button.y);
+            if (g_pinned && w->hwnd == g_pin_wnd)
+                bx = g_mouse_x, by = g_mouse_y; /* a camera drag: where the game's pointer is */
             uint32_t lp = ((uint32_t)(uint16_t)by << 16) | (uint16_t)bx;
             /* the buttons held after this event: SDL's own state may not have caught up (or be a
              * scripted press's) */
             SDL_MouseButtonFlags held = SDL_GetMouseState(NULL, NULL);
             held = down ? held | SDL_BUTTON_MASK(e.button.button) : held & ~SDL_BUTTON_MASK(e.button.button);
+            g_held = held;
             post(w->tid, w->hwnd, msg, mouse_keys(held), lp);
+            if (!held)
+                unpin();
             break;
         }
         case SDL_EVENT_MOUSE_WHEEL:
             w = wnd_of_sdl(e.wheel.windowID);
             if (w)
+            {
+                int x = to_game_x(w, e.wheel.mouse_x), y = to_game_y(w, e.wheel.mouse_y);
+                if (g_pinned && w->hwnd == g_pin_wnd)
+                    x = g_mouse_x, y = g_mouse_y;
                 post(w->tid, w->hwnd, WM_MOUSEWHEEL, ((uint32_t)(uint16_t)(int16_t)(e.wheel.y * 120) << 16),
-                    ((uint32_t)(uint16_t)to_game_y(w, e.wheel.mouse_y) << 16) | (uint16_t)to_game_x(w, e.wheel.mouse_x));
+                    ((uint32_t)(uint16_t)y << 16) | (uint16_t)x);
+            }
             break;
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -626,6 +682,8 @@ static void pump(void)
             {
                 memset(g_keys, 0, sizeof g_keys);
                 input_release_all();
+                g_held = 0;
+                unpin();
             }
             break;
         }
@@ -968,8 +1026,16 @@ static void sh_ScreenToClient(Guest* g)
     RET(w != NULL, 2);
 }
 
+/* GetCursorPos calls: the game's main loop reads the cursor once a tick (XIVLEGACY_MOTIONLOG) */
+volatile uint32_t u32_cursor_reads;
+
 static void sh_GetCursorPos(Guest* g)
 {
+    u32_cursor_reads++;
+    {
+        extern void d3d9_motion_tick(void);
+        d3d9_motion_tick();
+    }
     float x = 0, y = 0;
     Wnd* w = wnd(g_focus);
     if (w && g_mouse_wnd == w->hwnd)
@@ -1466,8 +1532,23 @@ static void sh_AttachThreadInput(Guest* g) { RET(1, 3); }
 
 static void sh_SetCursorPos(Guest* g)
 {
+    int32_t x = (int32_t)ARG(0), y = (int32_t)ARG(1);
+    Wnd* w = wnd(g_focus);
+    if (g_sdl_up && w && w->sdl && x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h)
+    {
+        /* a point of the game's window, in its w x h: what GetCursorPos answers from now on */
+        float fx = g_pinned ? g_pin_fx - (float)(int)g_pin_fx : 0.0f; /* motion short of a pixel */
+        float fy = g_pinned ? g_pin_fy - (float)(int)g_pin_fy : 0.0f;
+        g_mouse_wnd = w->hwnd, g_mouse_x = x - w->x, g_mouse_y = y - w->y;
+        g_pin_fx = (float)g_mouse_x + fx, g_pin_fy = (float)g_mouse_y + fy;
+        if (g_held && !g_pinned && SDL_SetWindowRelativeMouseMode(w->sdl, true))
+            g_pinned = 1, g_pin_wnd = w->hwnd; /* a camera drag (g_pinned) */
+        if (!g_pinned) /* the real cursor, at the point as the window is shown */
+            SDL_WarpMouseInWindow(w->sdl, to_shown_x(w, g_mouse_x), to_shown_y(w, g_mouse_y));
+        RET(1, 2);
+    }
     if (g_sdl_up)
-        SDL_WarpMouseGlobal((float)(int32_t)ARG(0), (float)(int32_t)ARG(1));
+        SDL_WarpMouseGlobal((float)x, (float)y);
     RET(1, 2);
 }
 

@@ -22,6 +22,9 @@ void input_sdl_event(const void* sdl_event);
 /* When a key, mouse button or gamepad button last went down (rt_monotonic_ns; auto-repeat counts
  * once): the game is about to answer the player. *held: that key or button is still down. */
 uint64_t input_last_press_ns(int* held);
+/* the last tap's press (a control let go soon after, not a move key or a mouse drag), and which
+ * control: kind << 16 | code (0 keyboard, 1 mouse, 2 gamepad) */
+uint64_t input_last_tap_ns(uint32_t* id);
 /* The window lost focus: every key and button comes up. */
 void input_release_all(void);
 

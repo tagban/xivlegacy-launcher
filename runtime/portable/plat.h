@@ -28,6 +28,10 @@ void plat_decommit(void* p, size_t size);
 /* Threads. */
 uint32_t plat_thread_id(void);
 int plat_thread_start(void (*fn)(void*), void* arg);
+/* The calling thread does the game's real-time work (it draws, or runs the main loop): on macOS the
+ * user-interactive QoS class, which keeps it on the performance cores (at the default class the
+ * drawing thread spent 30% of its time on efficiency cores); elsewhere a higher priority. */
+void plat_thread_interactive(void);
 /* Sends sig to every thread plat_thread_start started (POSIX; for debugging). */
 void plat_signal_threads(int sig);
 #if defined(_WIN32)

@@ -133,12 +133,38 @@ static void push(int kind, uint32_t ofs, uint32_t data)
 
 static volatile uint64_t g_last_press;
 static volatile uint32_t g_press_id, g_press_held; /* which control went down last (kind << 16 | code) */
+/* Taps (xiv_misc.c answers them fast): a control let go within TAP_NS of going down. Not the keys
+ * that move (W A S D Q E: a short step), and not a mouse button that moved while down (a camera
+ * drag): those had the drawing thread nap for two seconds each time, at half the frame rate. */
+#define TAP_NS 300000000ull
+static volatile uint64_t g_last_tap;
+static volatile uint32_t g_last_tap_id, g_press_moved;
+static int tap_counts(uint32_t id)
+{
+    switch (id)
+    {
+    case 0x10: case 0x11: case 0x12: case 0x1E: case 0x1F: case 0x20: /* DIK Q W E A S D */
+        return 0;
+    }
+    return !((id >> 16) == 1 && g_press_moved > 8); /* a mouse button: not dragged */
+}
 static void pressed(uint32_t id, int down)
 {
+    uint64_t now = rt_monotonic_ns();
     if (down)
-        g_press_id = id, g_press_held = 1, g_last_press = rt_monotonic_ns();
+        g_press_id = id, g_press_held = 1, g_last_press = now, g_press_moved = 0;
     else if (id == g_press_id)
+    {
         g_press_held = 0;
+        if (now - g_last_press < TAP_NS && tap_counts(id))
+            g_last_tap_id = id, g_last_tap = g_last_press;
+    }
+}
+uint64_t input_last_tap_ns(uint32_t* id)
+{
+    if (id)
+        *id = g_last_tap_id;
+    return g_last_tap;
 }
 uint64_t input_last_press_ns(int* held)
 {
@@ -172,6 +198,8 @@ void input_sdl_event(const void* ev)
     {
         int32_t dx = (int32_t)e->motion.xrel, dy = (int32_t)e->motion.yrel;
         g_dx += dx, g_dy += dy;
+        if (g_press_held && g_press_id >> 16 == 1)
+            g_press_moved += (uint32_t)(dx < 0 ? -dx : dx) + (uint32_t)(dy < 0 ? -dy : dy);
         if (dx)
             push(INPUT_MOUSE, 0, (uint32_t)dx);
         if (dy)

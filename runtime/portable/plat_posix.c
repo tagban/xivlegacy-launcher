@@ -23,6 +23,7 @@
 
 #if defined(__APPLE__)
 #include <os/os_sync_wait_on_address.h>
+#include <pthread/qos.h>
 #include <sys/sysctl.h>
 #else
 #include <linux/futex.h>
@@ -104,6 +105,13 @@ static void* thread_entry(void* p)
         g_tracked[i] = pthread_self();
     s.fn(s.arg);
     return NULL;
+}
+
+void plat_thread_interactive(void)
+{
+#if defined(__APPLE__)
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 }
 
 int plat_thread_start(void (*fn)(void*), void* arg)

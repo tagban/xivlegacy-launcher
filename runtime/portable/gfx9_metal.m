@@ -142,6 +142,80 @@ static float g_clear_z;
 
 int g9_active(void) { return g_dev != nil; }
 
+/* --- buffers the game seldom writes, kept whole on the GPU (g9_persistent) ------------------------
+ * Each draw copied the vertices and indices it uses into the frame's ring: the drawing thread's
+ * memmove was 5% of its time. A vertex or index buffer the game made without D3DUSAGE_DYNAMIC is
+ * written once and drawn every frame: it is copied once, to a buffer of its own, and drawn from
+ * there until the game writes it again (a new version: a new buffer; command buffers keep the old
+ * one while the GPU still reads it). */
+typedef struct
+{
+    uint32_t key, ver, size; /* key 0: free, ~0: free after a removal */
+    id<MTLBuffer> buf;
+} PBuf;
+#define PBUF_SLOTS 32768u
+static PBuf g_pbuf[PBUF_SLOTS];
+static uint32_t g_pbuf_made;
+static uint64_t g_pbuf_bytes;
+
+int g9_persistent(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("XIVLEGACY_NOPBUF") == NULL;
+    return on && g_dev != nil;
+}
+
+static PBuf* pbuf_find(uint32_t key, int insert)
+{
+    uint32_t h = (key * 2654435761u) % PBUF_SLOTS;
+    PBuf* free_slot = NULL;
+    for (uint32_t n = 0; n < PBUF_SLOTS; ++n, h = (h + 1) % PBUF_SLOTS)
+    {
+        PBuf* p = &g_pbuf[h];
+        if (p->key == key)
+            return p;
+        if (p->key == ~0u && !free_slot)
+            free_slot = p;
+        if (p->key == 0)
+        {
+            if (!insert)
+                return NULL;
+            p = free_slot ? free_slot : p;
+            p->key = key, p->ver = 0, p->size = 0, p->buf = nil;
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* the buffer for this key and version, made from the bytes if new; nil if the table is full */
+static id<MTLBuffer> pbuf_get(uint32_t key, uint32_t ver, const void* data, uint32_t size)
+{
+    if (!key || !size)
+        return nil;
+    PBuf* p = pbuf_find(key, 1);
+    if (!p)
+        return nil;
+    if (p->buf && p->ver == ver && p->size == size)
+        return p->buf;
+    [p->buf release];
+    p->buf = [g_dev newBufferWithBytes:data length:size options:MTLResourceStorageModeShared];
+    p->ver = ver, p->size = size;
+    g_pbuf_made++, g_pbuf_bytes += size;
+    return p->buf;
+}
+
+void g9_buffer_forget(uint32_t key)
+{
+    PBuf* p = pbuf_find(key, 0);
+    if (!p)
+        return;
+    [p->buf release];
+    p->buf = nil;
+    p->key = ~0u;
+}
+
 /* --- small caches: key bytes -> object ------------------------------------------------------------- */
 
 typedef struct Ent
@@ -1617,6 +1691,15 @@ void g9_draw(const G9Draw* d)
         {
             if (!k.stride[s] || !d->streams[s].data || !d->streams[s].size)
                 continue;
+            if (d->streams[s].key)
+            {
+                id<MTLBuffer> pb = pbuf_get(d->streams[s].key, d->streams[s].ver, d->streams[s].whole, d->streams[s].whole_size);
+                if (pb)
+                {
+                    [e setVertexBuffer:pb offset:d->streams[s].offset atIndex:s];
+                    continue;
+                }
+            }
             void* p = ring(d->streams[s].size, &buf, &off);
             memcpy(p, d->streams[s].data, d->streams[s].size);
             [e setVertexBuffer:buf offset:off atIndex:s];
@@ -1711,6 +1794,7 @@ void g9_draw(const G9Draw* d)
         if (!count)
             return;
         NSUInteger inst = d->instances ? d->instances : 1;
+        id<MTLBuffer> pib = nil;
 
         if (d->prim == 6)
         {
@@ -1736,6 +1820,14 @@ void g9_draw(const G9Draw* d)
             }
             [e drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:n indexType:MTLIndexTypeUInt32 indexBuffer:buf
                    indexBufferOffset:off instanceCount:inst baseVertex:0 baseInstance:0];
+        }
+        else if (d->indices && d->ikey && d->base_vertex >= 0 &&
+                 (pib = pbuf_get(d->ikey, d->iver, d->iwhole, d->iwhole_size)) != nil)
+        {
+            /* the game's index buffer as it is, its base vertex as Metal's */
+            [e drawIndexedPrimitives:prim_type(d->prim) indexCount:count
+                           indexType:d->index_size == 4 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16 indexBuffer:pib
+                   indexBufferOffset:d->ioffset instanceCount:inst baseVertex:d->base_vertex baseInstance:0];
         }
         else if (d->indices && d->base_vertex == 0)
         {

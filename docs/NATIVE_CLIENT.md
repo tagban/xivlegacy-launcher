@@ -94,6 +94,16 @@ button is No.
   drawing-thread turn between them, and a zero-timeout `select` on its socket each tick gave the lock
   up again: the loop ran at 11 Hz in the world and the mouse camera turned in steps. It now gets
   3 ms turns outside loading and keeps the lock through a poll: ~24 Hz, about once a frame (fps -10%).
+- macOS put the drawing thread on efficiency cores 30% of the time at the default QoS class: it and the
+  main loop ask for the user-interactive class (plat_thread_interactive), 22 -> 28 fps in the world.
+- Translated functions pass the general registers in host registers (guest.h RtRegs, swiftcall: four
+  packed 64-bit values in and out); through Guest each call was ~45 loads and stores. Each function
+  has a fast body f_X_r and an entry f_X(Guest*) for the runtime; indirect calls go through
+  rt_fastcall.h. 28 -> 34 fps. Flags still travel through Guest at returns: dropping them broke the
+  title screen.
+- The drawing thread runs ~340 million instructions a frame at about 3 per cycle; three quarters of
+  the guest memory references in the translation are stack traffic (push/pop, [esp+d]). Fewer
+  instructions alone (folded addresses, ThinLTO) did not change the frame rate.
 - The CRT's x87 math dispatch jumps through unaligned tables (`discovery/CrtDispatch.py`); the
   MSSMIXER section holds a CPU check outside `.text` (a native stand-in in `xiv_misc.c`).
 

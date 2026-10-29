@@ -394,6 +394,55 @@ static void profiler_thread(void* arg)
         }
         qsort(fns, (size_t)nf, sizeof *fns, prof_cmp);
         rt_log("[profile] thread %u: %u samples\n", tids[t], tcount[t]);
+        {
+            /* where the leaf samples land: the translation, shims, the rest of the runtime, the system
+             * (Metal's driver, waits, libraries); and how flat the translation's share is */
+            enum { C_TR, C_SH, C_RT, C_GPU, C_WAIT, C_SYS, C_N };
+            static const char* const CN[C_N] = { "translated", "shims", "runtime", "Metal/AGX", "waits", "system" };
+            uint32_t cat[C_N] = { 0 };
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                if (g_prof[i].tid != tids[t] || !g_prof[i].n)
+                    continue;
+                Dl_info di;
+                int c = C_SYS;
+                if (dladdr(g_prof[i].pc[0], &di))
+                {
+                    const char* nm = di.dli_sname ? di.dli_sname : "";
+                    const char* fn = di.dli_fname ? di.dli_fname : "";
+                    if (!strncmp(nm, "f_", 2))
+                        c = C_TR;
+                    else if (!strncmp(nm, "sh_", 3))
+                        c = C_SH;
+                    else if (strstr(fn, "/boot"))
+                        c = C_RT;
+                    else if (strstr(fn, "AGX") || strstr(fn, "Metal") || strstr(fn, "IOGPU") || strstr(fn, "IOAccel"))
+                        c = C_GPU;
+                    else if (strstr(nm, "wait") || strstr(nm, "nanosleep") || strstr(nm, "ulock") || strstr(nm, "swtch"))
+                        c = C_WAIT;
+                }
+                cat[c]++;
+            }
+            char line[512];
+            int o = snprintf(line, sizeof line, "[profile]   by kind:");
+            for (int c = 0; c < C_N; ++c)
+                o += snprintf(line + o, sizeof line - (size_t)o, " %s %.1f%%", CN[c], 100.0 * cat[c] / tcount[t]);
+            rt_log("%s\n", line);
+            uint32_t tr = 0, nfn = 0, acc = 0, n50 = 0, n80 = 0;
+            for (int f = 0; f < nf; ++f)
+                if (!strncmp(fns[f].name, "f_", 2) && fns[f].self)
+                    tr += fns[f].self, nfn++;
+            for (int f = 0, k = 0; f < nf; ++f)
+                if (!strncmp(fns[f].name, "f_", 2) && fns[f].self)
+                {
+                    acc += fns[f].self, k++;
+                    if (!n50 && acc * 2 >= tr)
+                        n50 = (uint32_t)k;
+                    if (!n80 && acc * 5 >= tr * 4)
+                        n80 = (uint32_t)k;
+                }
+            rt_log("[profile]   translated: %u functions with samples; half of their time in %u, 80%% in %u\n", nfn, n50, n80);
+        }
         for (int f = 0; f < nf && f < 25; ++f)
             rt_log("[profile]   %5.1f%% self %5.1f%% incl  %s\n", 100.0 * fns[f].self / tcount[t], 100.0 * fns[f].incl / tcount[t],
                 fns[f].name);
@@ -658,6 +707,19 @@ static void control_thread(void* arg)
                 gt_lock();
                 plat_sleep_ms((uint32_t)atoi(line + 6));
                 gt_unlock();
+            }
+            else if (!strncmp(line, "pace ", 5))
+            {
+                /* pace 0|1: the main loop's ticks in step with the frames (xiv_misc.c) */
+                extern void xiv_set_pace(int on);
+                xiv_set_pace(atoi(line + 5));
+            }
+            else if (!strncmp(line, "mark ", 5))
+            {
+                /* mark <text>: a line in the log and the motion log, to cut a measurement into parts */
+                extern void d3d9_motion_mark(const char* text);
+                rt_log("[mark] %s\n", line + 5);
+                d3d9_motion_mark(line + 5);
             }
             else if (!strcmp(line, "findnan"))
                 find_nans();
