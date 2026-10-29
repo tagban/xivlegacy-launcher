@@ -19,6 +19,9 @@ enum
 
 /* Called by the pump for every SDL event (an SDL_Event*). */
 void input_sdl_event(const void* sdl_event);
+/* When a key, mouse button or gamepad button last went down (rt_monotonic_ns; auto-repeat counts
+ * once): the game is about to answer the player. *held: that key or button is still down. */
+uint64_t input_last_press_ns(int* held);
 /* The window lost focus: every key and button comes up. */
 void input_release_all(void);
 

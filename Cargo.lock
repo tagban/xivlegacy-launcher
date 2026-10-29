@@ -3582,7 +3582,7 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xivlegacy-install"
-version = "0.1.17"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "cab",
@@ -3599,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "xivlegacy-launcher"
-version = "0.1.17"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "blowfish",

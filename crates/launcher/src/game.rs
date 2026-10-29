@@ -106,6 +106,8 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
         support.join("logs")
     };
     std::fs::create_dir_all(&logs)?;
+    // the last run's log survives one more start, so a crash report isn't lost to a quick retry
+    let _ = std::fs::rename(logs.join("game.log"), logs.join("game.prev.log"));
     let log = std::fs::File::create(logs.join("game.log"))?;
     let mut cmd = Command::new(&helper);
     cmd.arg("--module")
@@ -115,6 +117,9 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
         .current_dir(&support)
         .env("XIVLEGACY_USER", &user)
         .env("XIVLEGACY_LOBBY", host)
+        // what the game's bug-report key sends with a report (runtime/portable/bug_report.c)
+        .env("XIVLEGACY_LOGS", &logs)
+        .env("XIVLEGACY_LAUNCHER_LOG", crate::config::dir().join("launcher.log"))
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     #[cfg(windows)]
@@ -128,7 +133,10 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
     while start.elapsed() < Duration::from_secs(30) {
         if let Some(status) = child.try_wait()? {
             crate::config::log(&format!("game closed early: {status}"));
-            bail!("The game closed right after starting ({status}). Its log: {}", logs.join("game.log").display());
+            // kept apart from game.log, which the next start (often an immediate retry) replaces
+            let crash = logs.join("game-crash.log");
+            let shown = if std::fs::copy(logs.join("game.log"), &crash).is_ok() { crash } else { logs.join("game.log") };
+            bail!("The game closed right after starting ({status}). Its log: {}", shown.display());
         }
         std::thread::sleep(Duration::from_millis(250));
     }

@@ -572,7 +572,7 @@ void xiv_on_hitch(uint64_t from_ns, uint64_t to_ns)
     rt_log("\n");
 }
 
-static void push_key(SDL_WindowID id, SDL_Scancode sc)
+static void push_key_mod(SDL_WindowID id, SDL_Scancode sc, SDL_Keymod mod)
 {
     for (int down = 1; down >= 0; --down)
     {
@@ -580,11 +580,13 @@ static void push_key(SDL_WindowID id, SDL_Scancode sc)
         memset(&e, 0, sizeof e);
         e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
         e.key.windowID = id, e.key.scancode = sc, e.key.key = SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false);
-        e.key.down = down;
+        e.key.down = down, e.key.mod = mod;
         SDL_PushEvent(&e);
         plat_sleep_ms(60);
     }
 }
+
+static void push_key(SDL_WindowID id, SDL_Scancode sc) { push_key_mod(id, sc, SDL_KMOD_NONE); }
 
 static SDL_WindowID game_window(void)
 {
@@ -601,7 +603,7 @@ static SDL_WindowID game_window(void)
 }
 
 /* XIVLEGACY_CONTROL=<fifo>: commands, one a line, for driving a running game by hand:
- *   key <SDL key name>      hold <key> <ms>    click <x> <y>      move <x> <y>      type <text>
+ *   key [ctrl+]<SDL key name>  hold <key> <ms>    click <x> <y>      move <x> <y>      type <text>
  *   keydown <key>  keyup <key>   snap <png path>   stack
  *   look <button> <dx> <dy> <steps> [ms [still ms]]   hold a mouse button (1 left, 3 right), move by dx, dy each step
  *                           (from where the last click or move left the cursor)
@@ -629,9 +631,11 @@ static void control_thread(void* arg)
             float x = 0, y = 0;
             if (!strncmp(line, "key ", 4))
             {
-                SDL_Scancode sc = SDL_GetScancodeFromName(line + 4);
+                /* key ctrl+<name>: with Ctrl held (the bug-report key is ctrl+F12) */
+                int ctrl = !strncmp(line + 4, "ctrl+", 5);
+                SDL_Scancode sc = SDL_GetScancodeFromName(line + 4 + (ctrl ? 5 : 0));
                 if (sc != SDL_SCANCODE_UNKNOWN)
-                    push_key(id, sc);
+                    push_key_mod(id, sc, ctrl ? SDL_KMOD_LCTRL : SDL_KMOD_NONE);
             }
             else if ((!strncmp(line, "click ", 6) || !strncmp(line, "move ", 5)) && sscanf(strchr(line, ' ') + 1, "%f %f", &x, &y) == 2)
             {
@@ -845,7 +849,7 @@ static void control_thread(void* arg)
                 plat_sleep_ms(200);
                 plat_signal_threads(SIGUSR2);
             }
-            printf("[boot] control: %s\n", line);
+            printf("[boot] control: %s (t %.3f)\n", line, (double)rt_monotonic_ns() * 1e-9);
         }
         fclose(f);
     }

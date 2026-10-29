@@ -22,6 +22,7 @@
 #include "thunk.h"
 #include "xiv_icon.h"
 #include "user32.h"
+#include "bug_report.h"
 
 int (*user32_key_hook)(int scancode, int mods, int down);
 
@@ -503,9 +504,12 @@ static void pump(void)
     apply_display_request();
     if (!g_sdl_up)
         return;
+    bug_report_tick();
     SDL_Event e;
     while (SDL_PollEvent(&e))
     {
+        if (bug_report_event(&e))
+            continue; /* the bug-report key: not the game's */
         input_sdl_event(&e); /* DirectInput's view of the same events */
         Wnd* w = NULL;
         switch (e.type)
