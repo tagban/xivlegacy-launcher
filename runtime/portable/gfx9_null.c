@@ -21,6 +21,8 @@ int g9_init(void* sdl_window, int vsync)
     return 0;
 }
 int g9_active(void) { return 0; }
+int g9_persistent(void) { return 0; }
+void g9_buffer_forget(uint32_t key) { (void)key; }
 
 G9Tex* g9_tex_create(int type, uint32_t fmt, uint32_t w, uint32_t h, uint32_t d, uint32_t levels, int use)
 {

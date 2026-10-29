@@ -204,6 +204,7 @@ typedef struct Obj
     G9Shader* gs;
     uint32_t dirty; /* a level surface or volume written by the CPU since its last upload */
     uint32_t ver;   /* buffers: changes with each Lock (0: not yet given one; draw_range) */
+    uint32_t drawn_whole, relocks; /* buffers: drawn from the back end's own copy; locked again since */
     /* state blocks */
     struct Block* block;
 } Obj;
@@ -316,6 +317,8 @@ static void obj_free(Obj* o)
         }
     if (o->mem)
         gheap_free(o->mem);
+    if (o->drawn_whole)
+        g9_buffer_forget(o->guest);
     g9_tex_destroy(o->gt);
     g9_shader_destroy(o->gs);
     free(o->data);
@@ -1117,7 +1120,8 @@ static void sh_Buffer_Lock(Guest* g)
     uint32_t mem = obj_mem(b);
     if (!mem)
         RET(E_OUTOFMEMORY, 5);
-    b->ver = 0; /* written now: draw_range scans its indices again */
+    b->ver = 0; /* written now: draw_range scans its indices again, the back end copies it again */
+    b->relocks += b->drawn_whole != 0;
     wr32(ARG(3), mem + (ARG(1) < b->size ? ARG(1) : 0));
     RET(D3D_OK, 5);
 }
@@ -1133,10 +1137,16 @@ typedef struct
 static IdxRange g_idx_cache[IDX_CACHE];
 static uint32_t g_buf_ver;
 
+static uint32_t buf_ver(Obj* b)
+{
+    if (!b->ver)
+        b->ver = ++g_buf_ver ? g_buf_ver : ++g_buf_ver;
+    return b->ver;
+}
+
 static void draw_range(Obj* ib, uint32_t start, uint32_t count, uint32_t isize, uint32_t* lo_out, uint32_t* hi_out)
 {
-    if (!ib->ver)
-        ib->ver = ++g_buf_ver ? g_buf_ver : ++g_buf_ver;
+    buf_ver(ib);
     IdxRange* c = &g_idx_cache[(ib->guest * 0x9E3779B1u ^ start * 0x85EBCA6Bu ^ count * 0xC2B2AE35u) % IDX_CACHE];
     if (c->ib == ib->guest && c->ver == ib->ver && c->start == start && c->count == count && c->isize == isize)
     {
@@ -1420,6 +1430,45 @@ static int draw_state(G9Draw* d, uint32_t prim, uint32_t prims)
     if (!d->instances)
         d->instances = 1;
     sync_targets();
+    return 1;
+}
+
+/* A buffer the back end may keep whole (g9_persistent): made without D3DUSAGE_DYNAMIC, and not one
+ * the game keeps writing anyway (each write is a new copy). */
+static int whole_ok(Obj* b)
+{
+    return !(b->usage & 0x200u) && b->relocks < 4;
+}
+
+/* An indexed draw from the buffers whole, with its own base vertex: no vertices or indices copied,
+ * no index scan. 0 if a buffer is dynamic or an offset not 4-byte aligned (Metal's rule). */
+static int whole_draw(G9Draw* d, Obj* ib, uint32_t start, uint32_t isize)
+{
+    State* st = &g_dev->s;
+    if (!g9_persistent() || !whole_ok(ib) || (start * isize) % 4)
+        return 0;
+    for (int i = 0; i < 16; ++i)
+    {
+        Obj* vb = obj(st->stream[i]);
+        if (vb && obj_mem(vb) && st->stream_off[i] < vb->size && (!whole_ok(vb) || st->stream_off[i] % 4))
+            return 0;
+    }
+    for (int i = 0; i < 16; ++i)
+    {
+        Obj* vb = obj(st->stream[i]);
+        uint32_t mem = vb ? obj_mem(vb) : 0, off = st->stream_off[i];
+        if (!mem || off >= vb->size)
+            continue;
+        int inst = (st->stream_freq[i] & 0x80000000u) != 0;
+        d->streams[i] = (G9Stream){ GUEST_PTR(mem + off), vb->size - off, st->stream_stride[i], inst ? (st->stream_freq[i] & 0x7FFFFFFFu) : 0,
+            vb->guest, buf_ver(vb), off, vb->size, GUEST_PTR(mem) };
+        vb->drawn_whole = 1;
+    }
+    d->ikey = ib->guest, d->iver = buf_ver(ib), d->ioffset = start * isize, d->iwhole_size = ib->size;
+    d->iwhole = GUEST_PTR(obj_mem(ib));
+    d->indices = GUEST_PTR(ib->mem + start * isize);
+    d->index_size = isize;
+    ib->drawn_whole = 1;
     return 1;
 }
 
@@ -2265,7 +2314,12 @@ static void sh_Dev_DrawIndexedPrimitive(Guest* g)
         int32_t base = (int32_t)ARG(2);
         uint32_t start = ARG(5), isize = ib->fmt == FMT_INDEX32 ? 4 : 2;
         uint32_t count = prim_vertices(ARG(1), ARG(6));
-        if ((uint64_t)(start + count) * isize <= ib->size)
+        if ((uint64_t)(start + count) * isize <= ib->size && base >= 0 && whole_draw(&d, ib, start, isize))
+        {
+            d.base_vertex = base;
+            g9_draw(&d);
+        }
+        else if ((uint64_t)(start + count) * isize <= ib->size)
         {
             /* the vertices the indices actually reach: MinVertexIndex/NumVertices are hints drivers
              * ignore, and the game's are not always right (Gridania's cutscene: a copy cut to

@@ -66,6 +66,11 @@ typedef struct G9Stream
     const uint8_t* data; /* the first vertex the draw uses (or instance 0) */
     uint32_t size, stride;
     uint32_t instanced;  /* steps per instance (D3DSTREAMSOURCE_INSTANCEDATA) */
+    /* a buffer the game seldom writes, whole, when the back end keeps such (g9_persistent): key (0:
+     * none) and version (changes when the game writes it), the bytes, and where the stream starts in
+     * them; data and size then hold the same from that start, and the base vertex is not rebased */
+    uint32_t key, ver, offset, whole_size;
+    const uint8_t* whole;
 } G9Stream;
 
 typedef struct G9Draw
@@ -78,6 +83,9 @@ typedef struct G9Draw
     const void* indices;         /* NULL: a non-indexed draw from the streams' first vertex */
     uint32_t index_size;         /* 2 or 4 */
     int32_t base_vertex;         /* added to each index, relative to the streams' first vertex */
+    /* the index buffer whole (as G9Stream's key...): indices start at ioffset in it */
+    uint32_t ikey, iver, ioffset, iwhole_size;
+    const uint8_t* iwhole;
     uint32_t instances;          /* 1 unless instanced */
     const float* vsc;            /* float4 c[256] */
     const int32_t* vsi;          /* int4 i[16] */
@@ -92,6 +100,10 @@ typedef struct G9Draw
     int32_t scissor[4];
 } G9Draw;
 void g9_draw(const G9Draw* d);
+/* The back end keeps buffers the game seldom writes on the GPU, whole, and draws from them without a
+ * copy (G9Stream.key); g9_buffer_forget: the game released one. */
+int g9_persistent(void);
+void g9_buffer_forget(uint32_t key);
 
 /* the costs since the last call (the hitch log): shader pairs compiled, pipelines built, texture levels
  * uploaded, and the time each took */
