@@ -130,6 +130,8 @@ static G9Tex* g_live[MAX_LIVE];
 static uint32_t g_next_shader_id = 1;
 
 int g9_active(void) { return g_dev != NULL; }
+int g9_persistent(void) { return 0; } /* not yet: every draw copies its vertices and indices */
+void g9_buffer_forget(uint32_t key) { (void)key; }
 
 static void on_error(WGPUDevice const* device, WGPUErrorType type, WGPUStringView message, void* u1, void* u2)
 {
