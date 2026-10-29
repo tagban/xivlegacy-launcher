@@ -45,7 +45,9 @@ else:
     CFLAGS += ['-I', SDL + '/include']
     LIBS = ['-L' + SDL + '/lib', '-lSDL3', '-Wl,-rpath,' + SDL + '/lib', '-lm', '-lpthread']
 if sys.platform == 'darwin':
-    CFLAGS += ['-DRT_GUEST_FIXED_BASE=0x300000000ull']  # gwin.c reserves the guest window exactly there
+    CFLAGS += ['-DRT_GUEST_FIXED_BASE=0x10000000000ull']  # gwin.c reserves the guest window exactly there.
+    # 1 TB: macOS 27 moves any requested address below 0x7000000000 (its heap start) up to there, so
+    # the old 0x300000000 (now inside the larger dyld shared cache, too) fails; above it requests hold
     MACOS_MIN = os.environ.get('XIVLEGACY_MACOS_MIN', '13.0')  # the oldest macOS the host runs on
     CFLAGS += ['-mmacosx-version-min=' + MACOS_MIN]
     LIBS += ['-mmacosx-version-min=' + MACOS_MIN]

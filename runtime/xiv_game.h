@@ -14,7 +14,7 @@
 
 #include "runtime.h"
 
-#define XIV_GAME_ABI 2 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs) */
+#define XIV_GAME_ABI 3 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000 */
 
 typedef struct XivHostFns
 {

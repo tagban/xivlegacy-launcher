@@ -43,7 +43,7 @@ const EXT: &str = "so";
 fn cflags() -> Vec<&'static str> {
     let mut f = vec!["-std=c11", "-O2", "-fno-strict-aliasing", "-DRT_GUEST_WINDOW", "-fPIC", "-fvisibility=hidden", "-w"];
     if cfg!(target_os = "macos") {
-        f.push("-DRT_GUEST_FIXED_BASE=0x300000000ull");
+        f.push("-DRT_GUEST_FIXED_BASE=0x10000000000ull"); // tools/build.py says why
     }
     f
 }
@@ -97,6 +97,9 @@ pub fn module_path(game_dir: &Path) -> Result<PathBuf> {
         h.update(text.as_bytes());
     }
     h.update(env!("CARGO_PKG_VERSION").as_bytes()); // the recompiler ships with the launcher
+    for flag in cflags() {
+        h.update(flag.as_bytes()); // the guest window's base among them
+    }
     let key = &hex::encode(h.finalize())[..16];
     Ok(games_dir().join(format!("xivlegacy-game-{key}.{EXT}")))
 }
