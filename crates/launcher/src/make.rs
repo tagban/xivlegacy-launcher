@@ -22,9 +22,10 @@ use sha2::{Digest, Sha256};
 /// generated C includes.
 const META_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/meta.json.gz"));
 const PATCHES: &str = include_str!("../../../meta/ffxivgame.2012.09.19.0001.patches.json");
-const HEADERS: [(&str, &str); 5] = [
+const HEADERS: [(&str, &str); 6] = [
     ("guest.h", include_str!("../../../runtime/guest.h")),
     ("runtime.h", include_str!("../../../runtime/runtime.h")),
+    ("rt_fastcall.h", include_str!("../../../runtime/rt_fastcall.h")),
     ("sse.h", include_str!("../../../runtime/sse.h")),
     ("xiv_game.h", include_str!("../../../runtime/xiv_game.h")),
     ("xiv_module.c", include_str!("../../../runtime/xiv_module.c")),
