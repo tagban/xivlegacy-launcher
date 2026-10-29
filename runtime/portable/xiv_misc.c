@@ -532,9 +532,16 @@ static int pace_wait(uint32_t site, uint32_t ms)
     uint32_t f = g_frame_gen;
     if (f == g_pace_seen)
     {
-        /* no frame since the last tick: wait for one */
+        /* no frame since the last tick: wait for one (a futex wait may return early: wait again) */
+        uint64_t until = rt_monotonic_ns() + PACE_MAX_MS * 1000000ull;
         g_pace_waiting = 1;
-        plat_wait32_ms(&g_frame_gen, f, PACE_MAX_MS);
+        for (;;)
+        {
+            uint64_t now = rt_monotonic_ns();
+            if (g_frame_gen != f || now >= until)
+                break;
+            plat_wait32_ms(&g_frame_gen, f, (uint32_t)((until - now + 999999) / 1000000));
+        }
         g_pace_waiting = 0;
     }
     g_pace_seen = g_frame_gen;
