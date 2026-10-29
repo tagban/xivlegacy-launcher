@@ -17,7 +17,7 @@
 //! The emitted text must stay byte-identical to x86c.py's: the code follows it branch for branch.
 use crate::disasm::{self, Disasm, Insn, Op, OP_IMM, OP_MEM, OP_REG, REG_CS, REG_DS, REG_ES, REG_FS, REG_SS};
 use crate::program::Program;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[path = "x86c_sse.rs"]
 mod sse;
@@ -157,6 +157,7 @@ fn x87_locals(lines: Vec<String>) -> Vec<String> {
         s = s.replace("REGS_LOAD_NF;", "REGS_LOAD_NF; X87_LOAD;").replace("REGS_STORE_NF;", "REGS_STORE_NF; X87_STORE;");
         s = s.replace("REGS_IN;", "REGS_IN; X87_LOAD;").replace("REGS_STORE_R;", "REGS_STORE_R; X87_STORE;");
         s = s.replace("REGS_STORE_RET;", "REGS_STORE_RET; X87_STORE;");
+        s = s.replace("REGS_STORE_DF;", "REGS_STORE_DF; X87_STORE;");
         s = s.replace("REGS_LOAD_NF_R;", "REGS_LOAD_NF_R; X87_LOAD;").replace("REGS_STORE_NF_R;", "REGS_STORE_NF_R; X87_STORE;");
         s = sub_st(&s);
         s = s.replace("fpush(g, ", "X87_PUSH(").replace("fpop(g)", "X87_POP()").replace("fr(g, ", "fr_cw(x87_cw, ");
@@ -208,11 +209,104 @@ fn xmm_locals(lines: Vec<String>) -> Vec<String> {
         s = s.replace("REGS_IN;", &format!("REGS_IN; {}", load));
         s = s.replace("REGS_STORE_R;", &format!("REGS_STORE_R; {}", store));
         s = s.replace("REGS_STORE_RET;", &format!("REGS_STORE_RET; {}", store));
+        s = s.replace("REGS_STORE_DF;", &format!("REGS_STORE_DF; {}", store));
         s = s.replace("REGS_LOAD_NF_R;", &format!("REGS_LOAD_NF_R; {}", load));
         s = s.replace("REGS_STORE_NF_R;", &format!("REGS_STORE_NF_R; {}", store));
         out.push(s);
     }
     out
+}
+
+// ---------------------------------------------------------------------- flags across returns
+//
+// A translated return stores the arithmetic flags in g for whoever reads them next (a caller that
+// tests them after the call, or a function whose entry reads them). Most call sites overwrite every
+// flag before reading any, and then the callee's stores are wasted: FlagFacts says, per call site,
+// what happens to the flags after the return, and recomp.rs settles which callees must keep storing.
+
+const CF: u8 = 1;
+const PF: u8 = 2;
+const AF: u8 = 4;
+const ZF: u8 = 8;
+const SF: u8 = 16;
+const OF: u8 = 32;
+const ALL_FLAGS: u8 = 63;
+
+/// What the flags meet first on the straight path after a point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagEnd {
+    /// every flag written before any is read
+    Dead,
+    /// one read (or something not understood)
+    Live,
+    /// the function returns with them: live where its callers' sites are
+    Ret,
+    /// a call: live if the callee reads flags at its entry (None: through a pointer)
+    Call(Option<u64>),
+    /// a jump into another function: live if it reads them at its entry
+    Tail(u64),
+}
+
+/// A function's facts for the flag analysis (recomp.rs).
+pub struct FlagFacts {
+    /// what the flags at entry meet (every way)
+    pub entry: Vec<FlagEnd>,
+    /// per call: the callee (None: through a pointer) and what its returned flags meet
+    pub sites: Vec<(Option<u64>, Vec<FlagEnd>)>,
+    /// functions this one jumps into (their returns are this one's)
+    pub tails: Vec<u64>,
+    /// per site, and then the entry: the instruction a Live scan stopped at (diagnostics)
+    pub why: Vec<String>,
+    /// functions whose address this one uses as a value (push offset f, mov r, offset f)
+    pub taken: Vec<u64>,
+}
+
+/// (flags read, flags written) by an instruction, or None when it ends a straight path or is not
+/// understood. Writes include "undefined after", which x86 code cannot read.
+fn flag_effect(mn: &str, ops: &[Op]) -> Option<(u8, u8)> {
+    let imm_count = ops.get(1).map_or(false, |o| o.ty == OP_IMM && o.imm & 31 != 0);
+    let cc_reads = |c: &str| -> Option<u8> {
+        Some(match c {
+            "o" | "no" => OF, "b" | "ae" | "nae" | "nb" | "c" | "nc" => CF, "e" | "ne" | "z" | "nz" => ZF,
+            "be" | "a" | "na" | "nbe" => CF | ZF, "s" | "ns" => SF, "p" | "np" | "pe" | "po" => PF,
+            "l" | "ge" | "nge" | "nl" => SF | OF, "le" | "g" | "ng" | "nle" => ZF | SF | OF,
+            _ => return None,
+        })
+    };
+    if let Some(c) = mn.strip_prefix("set").or_else(|| mn.strip_prefix("cmov")).or_else(|| mn.strip_prefix("fcmov")) {
+        return cc_reads(c).or(Some(ALL_FLAGS)).map(|r| (r, 0));
+    }
+    Some(match mn {
+        "add" | "sub" | "cmp" | "and" | "or" | "xor" | "test" | "neg" | "imul" | "mul" | "div" | "idiv" | "bt" | "bts"
+        | "btr" | "btc" | "bsf" | "bsr" | "cmpxchg" | "xadd" | "comiss" | "ucomiss" | "comisd" | "ucomisd" | "fcomi"
+        | "fucomi" | "fcomip" | "fucomip" | "fcompi" | "fucompi" | "popfd" | "popf" | "cmpsb" | "cmpsw" | "cmpsd" | "scasb" | "scasw" | "scasd"
+        | "aaa" | "aas" | "daa" | "das" => (0, ALL_FLAGS),
+        "adc" | "sbb" => (CF, ALL_FLAGS),
+        "inc" | "dec" => (0, ALL_FLAGS & !CF),
+        "shl" | "sal" | "shr" | "sar" | "shld" | "shrd" => (0, if imm_count { ALL_FLAGS } else { 0 }),
+        "rol" | "ror" => (0, if imm_count { CF | OF } else { 0 }),
+        "rcl" | "rcr" => (CF, if imm_count { CF | OF } else { 0 }),
+        "stc" | "clc" => (0, CF),
+        "cmc" => (CF, CF),
+        "sahf" => (0, CF | PF | AF | ZF | SF),
+        "lahf" => (CF | PF | AF | ZF | SF, 0),
+        "pushfd" | "pushf" => (ALL_FLAGS, 0),
+        _ => {
+            // no effect on EFLAGS: moves, stack, x87 and SSE arithmetic, string moves
+            let neutral = matches!(mn, "mov" | "movzx" | "movsx" | "lea" | "push" | "pop" | "xchg" | "nop" | "cdq" | "cwde"
+                | "cbw" | "cwd" | "bswap" | "not" | "std" | "cld" | "fwait" | "wait" | "emms" | "ldmxcsr" | "stmxcsr"
+                | "leave")
+                || mn.starts_with("movs") || mn.starts_with("stos") || mn.starts_with("lods") || mn.starts_with("rep ")
+                // x87 compares other than fcomi/fucomi set the FPU status word, not EFLAGS
+                || (mn.starts_with('f') && !mn.starts_with("fcomi") && !mn.starts_with("fucomi") && !mn.starts_with("fcmov"))
+                || mn.starts_with("mov") || mn.starts_with("cvt") || mn.starts_with("punpck") || mn.starts_with("unpck")
+                || mn.starts_with("shuf") || mn.starts_with("pshuf") || mn.starts_with("sqrt") || mn.starts_with("rsqrt")
+                || mn.starts_with("rcp") || mn.starts_with("pack")
+                || matches!(mn.len().checked_sub(2).map(|n| &mn[n..]), Some("ps" | "ss" | "pd" | "sd"))
+                || (mn.starts_with('p') && !mn.starts_with("push") && !mn.starts_with("pop") && mn != "ptest");
+            if neutral { (0, 0) } else { return None }
+        }
+    })
 }
 
 /// What one translation produces besides its text.
@@ -238,6 +332,9 @@ pub struct FunctionTranslator<'a> {
     referenced: Vec<u64>,
     hooked: Vec<u64>,
     uses_x87: bool, // then the function keeps the x87 stack in locals (x87_locals)
+    /// callee-saved registers kept in C locals instead of their stack slots (save_slots): the
+    /// pushes and pops (by address) that only save and restore them
+    saves: HashMap<u64, &'static str>,
 }
 
 enum Item {
@@ -248,7 +345,8 @@ enum Item {
 impl<'a> FunctionTranslator<'a> {
     pub fn new(ctx: &'a Program, md: &'a mut Disasm, entry: u64, ranges: &'a [(u64, u64)]) -> Self {
         FunctionTranslator { ctx, md, entry, ranges, insns: Vec::new(), addrs: HashSet::new(), labels: HashSet::new(),
-                             unimpl: Vec::new(), referenced: Vec::new(), hooked: Vec::new(), uses_x87: false }
+                             unimpl: Vec::new(), referenced: Vec::new(), hooked: Vec::new(), uses_x87: false,
+                             saves: HashMap::new() }
     }
 
     // ------------------------------------------------------------------ decoding
@@ -302,6 +400,332 @@ impl<'a> FunctionTranslator<'a> {
 
     fn inside(&self, a: u64) -> bool {
         self.addrs.contains(&a)
+    }
+
+    /// The callee-saved registers (ebx, esi, edi) a function pushes in its prologue and pops back from
+    /// the same slot before every exit: those pushes and pops can keep the value in a C local and leave
+    /// the stack slot alone (half the guest memory traffic in the translation is stack traffic). The
+    /// prologue is the straight line from the entry up to the first call, branch, jump target or
+    /// other write to esp; an exit (ret, a jump out of the function) is preceded by its pops, read
+    /// backwards from the return address at depth 0. A function with an exception frame (fs:) or a
+    /// setjmp call keeps every slot: an unwind lands in it with the stack as the slots left it.
+    fn save_slots(&mut self) {
+        let insns = &self.insns;
+        let idx: HashMap<u64, usize> = insns.iter().enumerate().map(|(k, i)| (i.address, k)).collect();
+        let reg32 = |op: &Op| -> Option<&'static str> {
+            if op.ty != OP_REG {
+                return None;
+            }
+            disasm::reg_name(op.reg).and_then(|n| R32.iter().find(|&&x| x == n).copied())
+        };
+        let esp_imm = |ins: &Insn| -> Option<i64> {
+            // add/sub esp, imm: the change in depth
+            if let [d, s] = &ins.operands[..] {
+                if reg32(d) == Some("esp") && s.ty == OP_IMM {
+                    return match ins.mnemonic.as_str() { "add" => Some(s.imm), "sub" => Some(-s.imm), _ => None };
+                }
+            }
+            None
+        };
+        let writes_esp = |ins: &Insn| -> bool {
+            ins.operands.first().map_or(false, |d| reg32(d) == Some("esp"))
+                || matches!(ins.mnemonic.as_str(), "leave" | "pushal" | "popal" | "pushad" | "popad" | "enter")
+        };
+        // jump targets inside the function
+        let mut targets: HashSet<u64> = HashSet::new();
+        for i in insns {
+            let mut t = Vec::new();
+            self.jump_targets(i, &mut t);
+            targets.extend(t.into_iter().filter(|a| self.addrs.contains(a)));
+            if i.operands.iter().any(|o| o.ty == OP_MEM && o.mem.segment == REG_FS) {
+                return;
+            }
+            if i.mnemonic == "call" {
+                if let Some(o) = i.operands.first().filter(|o| o.ty == OP_IMM) {
+                    if self.ctx.setjmps.contains(&(o.imm as u64 & 0xFFFF_FFFF)) {
+                        return;
+                    }
+                }
+            }
+        }
+        // the prologue: pushes of callee-saved registers and the slot each went to (depth after it)
+        let Some(&first) = idx.get(&self.entry) else { return };
+        let mut pushed: HashMap<i64, (&'static str, u64)> = HashMap::new();
+        let mut depth: i64 = 0;
+        let mut k = first;
+        loop {
+            let i = &insns[k];
+            if k != first && targets.contains(&i.address) {
+                break;
+            }
+            let mn = i.mnemonic.as_str();
+            if mn == "push" {
+                let r = i.operands.first().and_then(reg32);
+                depth -= 4;
+                if let Some(r) = r.filter(|r| matches!(*r, "ebx" | "esi" | "edi")) {
+                    pushed.entry(depth).or_insert((r, i.address));
+                }
+            } else if let Some(d) = esp_imm(i) {
+                depth += d;
+            } else if mn == "pop" || writes_esp(i) || mn == "call" || mn.starts_with('j') || mn.starts_with("ret")
+                || mn.starts_with("loop") || mn == "int3" {
+                break;
+            }
+            let next = i.address + i.size as u64;
+            match insns.get(k + 1) {
+                Some(n) if n.address == next => k += 1,
+                _ => break,
+            }
+        }
+        if pushed.is_empty() {
+            return;
+        }
+        // every exit: the pops before it, by slot
+        let mut keep: HashSet<i64> = pushed.keys().copied().collect();
+        let mut pops: Vec<(u64, &'static str)> = Vec::new();
+        let falls = |i: &Insn| !(i.mnemonic == "jmp" || i.mnemonic.starts_with("ret") || i.mnemonic == "int3");
+        for (k, i) in insns.iter().enumerate() {
+            let mn = i.mnemonic.as_str();
+            let next = i.address + i.size as u64;
+            let mut exit = mn.starts_with("ret");
+            let mut walk_from = k; // the first instruction before the exit's control transfer
+            let mut known = true;  // the depth at the exit is 0 (a return, a tail call)
+            if mn == "jmp" || (mn.starts_with('j') && cc(&mn[1..]).is_some()) || matches!(mn, "jecxz" | "loop" | "loope" | "loopne") {
+                match i.operands.first() {
+                    Some(o) if o.ty == OP_IMM => {
+                        let t = o.imm as u64 & 0xFFFF_FFFF;
+                        if !self.addrs.contains(&t) {
+                            exit = true;
+                            known = mn == "jmp" && self.ctx.entries.contains(&t);
+                        }
+                    }
+                    _ => {
+                        if mn == "jmp" {
+                            exit = true; // through a pointer, or a table: treat any as leaving
+                            known = false;
+                        }
+                    }
+                }
+            }
+            if !exit && falls(i) && !idx.contains_key(&next) {
+                exit = true; // falls into code outside the function: a split, depth unknown
+                known = false;
+                walk_from = k + 1;
+            }
+            if !exit {
+                continue;
+            }
+            // the pops (and add esp) just before, walked back from depth 0
+            let mut found: HashSet<i64> = HashSet::new();
+            if known {
+                let mut d: i64 = 0;
+                let mut j = walk_from;
+                while j > 0 {
+                    let p = &insns[j - 1];
+                    if p.address + p.size as u64 != insns[j].address || !falls(p) {
+                        break;
+                    }
+                    if p.mnemonic == "pop" {
+                        d -= 4;
+                        if let Some(r) = p.operands.first().and_then(reg32) {
+                            if pushed.get(&d).map_or(false, |&(pr, _)| pr == r) {
+                                found.insert(d);
+                                pops.push((p.address, r));
+                            }
+                        }
+                    } else if let Some(x) = esp_imm(p) {
+                        d -= x;
+                    } else {
+                        break;
+                    }
+                    j -= 1;
+                }
+            }
+            keep.retain(|d| found.contains(d));
+            if keep.is_empty() {
+                return;
+            }
+        }
+        for d in &keep {
+            let (r, a) = pushed[d];
+            self.saves.insert(a, r);
+        }
+        let kept: HashSet<&str> = keep.iter().map(|d| pushed[d].0).collect();
+        for (a, r) in pops {
+            if kept.contains(r) {
+                // a pop matched only when its slot is one kept (same register, same slot)
+                self.saves.insert(a, r);
+            }
+        }
+    }
+
+    /// From instruction index k on the straight path (and jumps within the function): what the
+    /// flags still `undecided` meet first.
+    /// From instruction index k: every way the flags still `undecided` can end up (a branch that
+    /// reads only flags already written is followed both ways), with why for a Live one.
+    fn flag_scan(&self, idx: &HashMap<u64, usize>, k: usize, undecided: u8) -> Vec<(FlagEnd, String)> {
+        let insns = &self.insns;
+        let mut ends: Vec<(FlagEnd, String)> = Vec::new();
+        let mut seen: HashSet<(usize, u8)> = HashSet::new();
+        let mut work: Vec<(usize, u8)> = vec![(k, undecided)];
+        let mut steps = 0;
+        let live = |ends: &mut Vec<(FlagEnd, String)>, w: String| ends.push((FlagEnd::Live, w));
+        while let Some((mut k, mut undecided)) = work.pop() {
+            loop {
+                steps += 1;
+                if steps > 2048 {
+                    live(&mut ends, "(long)".into());
+                    return ends;
+                }
+                if !seen.insert((k, undecided)) {
+                    break; // already followed from here: nothing new on this path
+                }
+                let Some(i) = insns.get(k) else { live(&mut ends, "(end)".into()); break };
+                let mn = i.mnemonic.as_str();
+                let ops = &i.operands[..];
+                let target = ops.first().filter(|o| o.ty == OP_IMM).map(|o| o.imm as u64 & 0xFFFF_FFFF);
+                let next = i.address + i.size as u64;
+                if mn == "call" {
+                    match target {
+                        Some(t) if self.ctx.entries.contains(&t) => ends.push((FlagEnd::Call(Some(t)), String::new())),
+                        // the runtime's (an import, a stand-in): flags are undefined after a Win32 call
+                        Some(_) => ends.push((FlagEnd::Dead, String::new())),
+                        None => ends.push((FlagEnd::Call(None), String::new())),
+                    }
+                    break;
+                }
+                if mn.starts_with("ret") {
+                    ends.push((FlagEnd::Ret, String::new()));
+                    break;
+                }
+                if matches!(mn, "int3" | "ud2" | "hlt") {
+                    ends.push((FlagEnd::Dead, String::new()));
+                    break;
+                }
+                // where control goes on: (fallthrough?, jump target?)
+                let mut succ: Vec<u64> = Vec::new();
+                if mn == "jmp" {
+                    match target {
+                        Some(t) => succ.push(t),
+                        None => {
+                            match self.ctx.switches.get(&i.address) {
+                                Some(sw) => succ.extend_from_slice(sw),
+                                // into whatever the pointer holds, as a call through it
+                                None => ends.push((FlagEnd::Call(None), String::new())),
+                            }
+                        }
+                    }
+                } else if mn.starts_with('j') || mn.starts_with("loop") {
+                    let reads = match mn {
+                        "jecxz" | "jcxz" | "loop" => 0,
+                        "loope" | "loopne" | "loopz" | "loopnz" => ZF,
+                        _ => flag_effect(&format!("set{}", &mn[1..]), ops).map_or(ALL_FLAGS, |(r, _)| r),
+                    };
+                    if reads & undecided != 0 {
+                        live(&mut ends, format!("reads:{}", mn));
+                        break;
+                    }
+                    succ.push(next);
+                    if let Some(t) = target {
+                        succ.push(t);
+                    }
+                } else {
+                    let Some((r, w)) = flag_effect(mn, ops) else { live(&mut ends, format!("?{}", mn)); break };
+                    if r & undecided != 0 {
+                        live(&mut ends, format!("reads:{}", mn));
+                        break;
+                    }
+                    undecided &= !w;
+                    if undecided == 0 {
+                        ends.push((FlagEnd::Dead, String::new()));
+                        break;
+                    }
+                    succ.push(next);
+                }
+                // follow the successors: inside the function, or into another one
+                let mut cont = None;
+                for t in succ {
+                    match idx.get(&t) {
+                        Some(&j) => {
+                            if cont.is_none() { cont = Some(j) } else { work.push((j, undecided)) }
+                        }
+                        None if self.ctx.entries.contains(&t) => ends.push((FlagEnd::Tail(t), String::new())),
+                        None => live(&mut ends, "jmp-out".into()),
+                    }
+                }
+                match cont {
+                    Some(j) => k = j,
+                    None => break,
+                }
+            }
+        }
+        ends
+    }
+
+    /// The function's facts for the flag analysis across returns.
+    pub fn flag_facts(mut self) -> FlagFacts {
+        if self.ctx.longjmps.contains(&self.entry) {
+            return FlagFacts { entry: vec![FlagEnd::Dead], sites: Vec::new(), tails: Vec::new(), why: Vec::new(), taken: Vec::new() };
+        }
+        self.decode();
+        let idx: HashMap<u64, usize> = self.insns.iter().enumerate().map(|(k, i)| (i.address, k)).collect();
+        let split = |v: Vec<(FlagEnd, String)>| -> (Vec<FlagEnd>, String) {
+            let w = v.iter().find(|(e, _)| *e == FlagEnd::Live).map(|(_, w)| w.clone()).unwrap_or_default();
+            (v.into_iter().map(|(e, _)| e).collect(), w)
+        };
+        let (entry, entry_why) = match idx.get(&self.entry) {
+            Some(&k) => split(self.flag_scan(&idx, k, ALL_FLAGS)),
+            None => (vec![FlagEnd::Live], "(no entry)".to_string()),
+        };
+        let mut sites = Vec::new();
+        let mut why = Vec::new();
+        let mut taken = Vec::new();
+        let mut tails = Vec::new();
+        for i in self.insns.iter() {
+            let mn = i.mnemonic.as_str();
+            let target = i.operands.first().filter(|o| o.ty == OP_IMM).map(|o| o.imm as u64 & 0xFFFF_FFFF);
+            if !(mn == "call" || mn.starts_with('j') || mn.starts_with("loop")) {
+                for o in &i.operands {
+                    let v = o.imm as u64 & 0xFFFF_FFFF;
+                    if o.ty == OP_IMM && self.ctx.entries.contains(&v) {
+                        taken.push(v);
+                    }
+                }
+            }
+            if mn == "call" {
+                let next = i.address + i.size as u64;
+                let callee = match target {
+                    Some(t) if self.ctx.entries.contains(&t) => Some(t),
+                    Some(_) => continue, // not a translation: the runtime's
+                    None => None,
+                };
+                let (end, w) = match idx.get(&next) {
+                    Some(&j) => split(self.flag_scan(&idx, j, ALL_FLAGS)),
+                    None if self.ctx.entries.contains(&next) => (vec![FlagEnd::Tail(next)], String::new()),
+                    // the return address is no translation's code: the call does not return
+                    None => (vec![FlagEnd::Dead], String::new()),
+                };
+                sites.push((callee, end));
+                why.push(w);
+            } else if mn == "jmp" || (mn.starts_with('j') && cc(&mn[1..]).is_some()) || matches!(mn, "jecxz" | "loop" | "loope" | "loopne") {
+                match target {
+                    Some(t) if !idx.contains_key(&t) && self.ctx.entries.contains(&t) => tails.push(t),
+                    None if mn == "jmp" => {
+                        if let Some(sw) = self.ctx.switches.get(&i.address) {
+                            tails.extend(sw.iter().copied().filter(|t| !idx.contains_key(t) && self.ctx.entries.contains(t)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let next = i.address + i.size as u64;
+            let falls = !(mn == "jmp" || mn.starts_with("ret") || mn == "int3");
+            if falls && !idx.contains_key(&next) && self.ctx.entries.contains(&next) {
+                tails.push(next);
+            }
+        }
+        why.push(entry_why);
+        FlagFacts { entry, sites, tails, why, taken }
     }
 
     // ------------------------------------------------------------------ operands
@@ -488,7 +912,10 @@ impl<'a> FunctionTranslator<'a> {
         }
         if self.ctx.entries.contains(&target) {
             self.referenced.push(target);
-            return format!("{{ REGS_STORE_R; RT_TAIL({}{:08x}_r); }}", self.ctx.prefix, target);
+            // the flags only for a function that reads them at its entry or returns ones some caller reads
+            let flags = self.ctx.flags_in.as_ref().map_or(true, |i| i.contains(&target))
+                || self.ctx.flags_out.as_ref().map_or(true, |o| o.contains(&target));
+            return format!("{{ {}; RT_TAIL({}{:08x}_r); }}", if flags { "REGS_STORE_R" } else { "REGS_STORE_DF" }, self.ctx.prefix, target);
         }
         format!("RT_BADJUMP({});", hex32(target))
     }
@@ -520,6 +947,7 @@ impl<'a> FunctionTranslator<'a> {
             return Ok(Translated { lines, unimpl: Vec::new(), referenced: Vec::new(), hooked: Vec::new() });
         }
         self.decode();
+        self.save_slots();
         let insns = std::mem::take(&mut self.insns);
         let mut body: Vec<Item> = Vec::with_capacity(insns.len() * 6);
         let mut prev_falls_to: Option<u64> = None;
@@ -568,6 +996,12 @@ impl<'a> FunctionTranslator<'a> {
 
         let mut out = vec![format!("RtRegs RT_FASTCC {}{:08x}_r(RT_FAST_PARAMS)", self.ctx.prefix, self.entry), "{".into(),
                            "    REGS_DECL;".into(), "    REGS_IN;".into()];
+        let mut sv: Vec<&str> = self.saves.values().copied().collect();
+        sv.sort();
+        sv.dedup();
+        if !sv.is_empty() {
+            out.push(format!("    uint32_t {};", sv.iter().map(|r| format!("sv_{}", r)).collect::<Vec<_>>().join(", ")));
+        }
         if let Some(first) = insns.first() {
             if first.address != self.entry {
                 out.push(format!("    goto L_{:08x};", self.entry));
@@ -771,6 +1205,9 @@ impl<'a> FunctionTranslator<'a> {
             "cwd" => return Ok((vec!["edx = (edx & 0xFFFF0000u) | ((eax & 0x8000u) ? 0xFFFFu : 0u);".into()], true)),
             "push" => {
                 let s = ops1(ops)?;
+                if let Some(r) = self.saves.get(&ins.address) {
+                    return Ok((vec![format!("esp -= 4; sv_{} = {};", r, r)], true));
+                }
                 if bits_of(s) != 32 && s.ty != OP_IMM {
                     return unsup("16-bit push");
                 }
@@ -778,6 +1215,9 @@ impl<'a> FunctionTranslator<'a> {
             }
             "pop" => {
                 let d = ops1(ops)?;
+                if let Some(r) = self.saves.get(&ins.address) {
+                    return Ok((vec![format!("{} = sv_{}; esp += 4;", r, r)], true));
+                }
                 if bits_of(d) != 32 {
                     return unsup("16-bit pop");
                 }
@@ -795,7 +1235,7 @@ impl<'a> FunctionTranslator<'a> {
             "pushfd" => return Ok((vec!["{ uint32_t f = cf | 2u | (pf << 2) | (af << 4) | (zf << 6) | (sf << 7) | (df << 10) | (of << 11); \
                 esp -= 4; wr32(esp, f); }".into()], true)),
             "popfd" => return Ok((vec!["{ uint32_t f = rd32(esp); esp += 4; cf = f & 1u; pf = (f >> 2) & 1u; af = (f >> 4) & 1u; \
-                zf = (f >> 6) & 1u; sf = (f >> 7) & 1u; df = (f >> 10) & 1u; of = (f >> 11) & 1u; }".into()], true)),
+                zf = (f >> 6) & 1u; sf = (f >> 7) & 1u; df = (f >> 10) & 1u; of = (f >> 11) & 1u; g->df = (uint8_t)df; }".into()], true)),
             "lahf" => return Ok((vec!["eax = (eax & 0xFFFF00FFu) | ((sf << 15) | (zf << 14) | (af << 12) | (pf << 10) | (1u << 9) | (cf << 8));".into()], true)),
             "sahf" => return Ok((vec!["{ uint32_t h = (eax >> 8) & 0xFFu; cf = h & 1u; pf = (h >> 2) & 1u; af = (h >> 4) & 1u; \
                 zf = (h >> 6) & 1u; sf = (h >> 7) & 1u; }".into()], true)),
@@ -803,8 +1243,9 @@ impl<'a> FunctionTranslator<'a> {
             "clc" => return Ok((vec!["cf = 0;".into()], true)),
             "stc" => return Ok((vec!["cf = 1;".into()], true)),
             "cmc" => return Ok((vec!["cf ^= 1u;".into()], true)),
-            "cld" => return Ok((vec!["df = 0;".into()], true)),
-            "std" => return Ok((vec!["df = 1;".into()], true)),
+            // g->df follows every change, so calls need not carry it (guest.h REGS_STORE_NF_R)
+            "cld" => return Ok((vec!["df = 0; g->df = 0;".into()], true)),
+            "std" => return Ok((vec!["df = 1; g->df = 1;".into()], true)),
             _ => {}
         }
         if let Some(c) = mn.strip_prefix("set").and_then(cc) {
@@ -924,7 +1365,9 @@ impl<'a> FunctionTranslator<'a> {
         }
         if mn == "ret" {
             let n = ops.first().map(|o| o.imm).unwrap_or(0);
-            return Ok((vec![format!("esp += {}; REGS_STORE_RET; return RT_REGS_OUT;", 4 + n)], false));
+            // the flags only for a function some caller reads them after (recomp.rs: flags_after_return)
+            let store = if self.ctx.flags_out.as_ref().map_or(true, |f| f.contains(&self.entry)) { "REGS_STORE_RET" } else { "REGS_STORE_DF" };
+            return Ok((vec![format!("esp += {}; {}; return RT_REGS_OUT;", 4 + n, store)], false));
         }
 
         unsup(mn)

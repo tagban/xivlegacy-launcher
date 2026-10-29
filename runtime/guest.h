@@ -152,11 +152,17 @@ typedef struct
 #define REGS_STORE_R                                                                             \
     g->cf = (uint8_t)cf; g->pf = (uint8_t)pf; g->af = (uint8_t)af; g->zf = (uint8_t)zf;          \
     g->sf = (uint8_t)sf; g->of = (uint8_t)of; g->df = (uint8_t)df
-#define REGS_STORE_NF_R g->df = (uint8_t)df
-/* a return stores the flags too: dropping them (only DF) made the game fail at its title screen,
- * so some translated code reads flags a callee left, through a function entry (REGS_IN) */
+/* Calls carry no DF: the Win32 x86 ABI has it clear at every call and return, and the translation
+ * keeps g->df current wherever it changes (std, cld, popfd, tail jumps, returns), so a callee's
+ * REGS_IN reads the right one. */
+#define REGS_STORE_NF_R (void)0
+/* a return whose caller may read the flags (a C library helper returns a NaN test in ZF, and
+ * dropping the flags everywhere made the game fail at its title screen) */
 #define REGS_STORE_RET REGS_STORE_R
-#define REGS_LOAD_NF_R df = g->df
+/* a return or tail jump whose flags no one reads (recomp.rs flags_after_return: callers that test a
+ * callee's flags are rare, two C library helpers return a NaN test in ZF): only DF goes on */
+#define REGS_STORE_DF g->df = (uint8_t)df
+#define REGS_LOAD_NF_R (void)0
 #define RT_CALL(fn)                                                                              \
     do { RtRegs r_ = fn(g, RT_PACK(eax, edx), RT_PACK(ecx, esp), RT_PACK(ebx, ebp), RT_PACK(esi, edi)); \
          RT_UNPACK(r_.a, r_.b, r_.c, r_.d); } while (0)
