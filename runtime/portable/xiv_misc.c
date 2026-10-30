@@ -1,6 +1,7 @@
 /* The smaller DLLs ffxivgame.exe imports: CRYPT32 and WINTRUST (the game checks its own
  * Authenticode signature), and the rest as they come up. */
 #include <ctype.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -455,6 +456,108 @@ static void hook_streamlog(Guest* g)
     }
 }
 
+/* Lua errors. The game's Lua is built as C++: lua_error ends in luaD_throw (0xDCF9C0), which sets
+ * L->errorJmp->status and throws the lua_longjmp* (MSVC's _CxxThrowException, so RaiseException
+ * 0xE06D7363), and luaD_rawrunprotected (0xDCF140, behind lua_pcall and lua_resume) catches it.
+ * The translation has no C++ exception dispatch, so the host runs luaD_rawrunprotected
+ * (recomp --hooks replace_lua_protected=0xdcf140) around a setjmp, and a throw of a lua_longjmp
+ * jumps back to the innermost one, as the catch would. Before this every script error the game
+ * survives on Windows (a quest script's bad call, say) stopped the client.
+ *
+ * The frames thrown past are not unwound: C++ destructors in game functions Lua called do not run
+ * (a leak at worst; Lua's own C code has none). */
+#ifndef XIVLEGACY_SPLIT
+extern GuestFn rt_hook_replace_lua_protected __attribute__((weak));
+#endif
+
+typedef struct LuaCatch
+{
+    jmp_buf jb;
+    Guest regs;              /* the guest as at the call: put back when a throw lands here */
+    struct LuaCatch* outer;
+} LuaCatch;
+static _Thread_local LuaCatch* t_lua_catch;
+static volatile int g_lua_selftest; /* the control channel's "luatest" */
+
+void xiv_lua_selftest(void) { g_lua_selftest = 1; }
+
+/* int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud): cdecl */
+static void hook_lua_protected(Guest* g)
+{
+    uint32_t L = rd32(g->esp + 4), f = rd32(g->esp + 8), ud = rd32(g->esp + 12);
+    if (g_lua_selftest && !t_lua_catch)
+    {
+        /* luaD_throw(L, errcode) has a Pfunc's shape: a protected call of it with ud = 2 must
+         * throw, land back here and return 2 - the whole way a script error goes */
+        g_lua_selftest = 0;
+        uint32_t a[3] = { L, 0xDCF9C0u, 2 };
+        uint32_t r = guest_call(0xDCF140u, 3, a);
+        rt_log("[lua] self-test: a protected luaD_throw(L, 2) returned %u (2 is right)\n", r);
+    }
+    uint32_t esp = g->esp;
+    /* struct lua_longjmp { previous, (jmp_buf), status } on the guest stack, below the arguments:
+     * previous at +0, status at +8, as luaD_throw expects */
+    g->esp -= 16;
+    uint32_t lj = g->esp;
+    wr32(lj, rd32(L + 0x70)); /* L->errorJmp */
+    wr32(lj + 4, 0);
+    wr32(lj + 8, 0);
+    wr32(L + 0x70, lj);
+    LuaCatch c;
+    c.regs = *g;
+    c.outer = t_lua_catch;
+    t_lua_catch = &c;
+    if (!setjmp(c.jb))
+    {
+        uint32_t a[2] = { L, ud };
+        guest_call(f, 2, a);
+    }
+    else
+    {
+        uint16_t fcw = g->fcw;
+        *g = c.regs; /* registers, stack and SEH chain as at the call */
+        g->fcw = fcw;
+        if (!rd32(lj + 8))
+            wr32(lj + 8, (uint32_t)-1); /* catch (...): an unknown error */
+    }
+    t_lua_catch = c.outer;
+    wr32(L + 0x70, rd32(lj));
+    g->eax = rd32(lj + 8);
+    g->esp = esp + 4; /* ret: the caller pops the arguments */
+}
+
+/* The thrown type's name: ThrowInfo -> CatchableTypeArray -> first CatchableType -> TypeDescriptor. */
+static int throws_lua_longjmp(uint32_t nargs, uint32_t args)
+{
+    if (nargs < 3 || !args || rd32(args) != 0x19930520u)
+        return 0;
+    uint32_t ti = rd32(args + 8);
+    if (!ti || !rd32(ti + 12) || !rd32(rd32(ti + 12)) )
+        return 0;
+    uint32_t ct = rd32(rd32(ti + 12) + 4), td = ct ? rd32(ct + 4) : 0;
+    return td && strcmp((const char*)GUEST_PTR(td + 8), ".PAUlua_longjmp@@") == 0;
+}
+
+void xiv_lua_throw(Guest* g, uint32_t code, uint32_t nargs, uint32_t args)
+{
+    (void)g;
+    if (code != 0xE06D7363u || !t_lua_catch || !throws_lua_longjmp(nargs, args))
+        return;
+    rt_log("[lua] script error: back to its protected call\n");
+    longjmp(t_lua_catch->jb, 1);
+}
+
+static void lua_protected_install(void)
+{
+#ifdef XIVLEGACY_SPLIT
+    if (xiv_game->hook_lua_protected)
+        *xiv_game->hook_lua_protected = hook_lua_protected;
+#else
+    if (&rt_hook_replace_lua_protected)
+        rt_hook_replace_lua_protected = hook_lua_protected;
+#endif
+}
+
 /* The loading screen. The game's "Now Loading" widget (\system\common\NowLoading.form, built at
  * 0x56A4A0, vtable 0xFA588C) hangs off the app: [0x13232B8] + 0x34 is the object the main loop
  * ticks, its +0x64 the UI manager, whose +0x10 + 0x175A4 holds the widget. The widget's byte at
@@ -716,4 +819,5 @@ static const ShimDef XIV_MISC[] = {
 void xiv_misc_init(void)
 {
     thunk_register(XIV_MISC);
+    lua_protected_install();
 }

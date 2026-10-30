@@ -723,6 +723,8 @@ static void control_thread(void* arg)
             }
             else if (!strcmp(line, "findnan"))
                 find_nans();
+            else if (!strcmp(line, "luatest"))
+                xiv_lua_selftest(); /* the next Lua protected call checks that a Lua error comes back */
             else if (!strncmp(line, "type ", 5))
             {
                 for (const char* p = line + 5; *p; ++p)

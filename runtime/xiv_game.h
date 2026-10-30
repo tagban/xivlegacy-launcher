@@ -14,7 +14,7 @@
 
 #include "runtime.h"
 
-#define XIV_GAME_ABI 3 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000 */
+#define XIV_GAME_ABI 4 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000; 4: Lua's protected call hook */
 
 typedef struct XivHostFns
 {
@@ -35,6 +35,8 @@ typedef struct XivGameModule
     const uint32_t *image_base, *image_timestamp, *image_size, *image_text_rva, *image_text_size, *image_oep;
     /* the recompiler's hook point at the game's log stream (recomp --hooks streamlog=...) */
     GuestFn* hook_streamlog;
+    /* Lua's protected call, run by the host (recomp --hooks replace_lua_protected=...) */
+    GuestFn* hook_lua_protected;
     /* the module's own copies of the runtime's variables */
     unsigned char** guest_base;
     uint32_t* reloc_delta;

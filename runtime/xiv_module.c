@@ -32,6 +32,7 @@ static void set_host(const XivHostFns* fns) { g_host = *fns; }
 #include "rt_fastcall.h"
 
 extern GuestFn rt_hook_streamlog;
+extern GuestFn rt_hook_replace_lua_protected;
 
 XIV_EXPORT const XivGameModule xiv_game_module = {
     XIV_GAME_ABI,
@@ -46,6 +47,7 @@ XIV_EXPORT const XivGameModule xiv_game_module = {
     &rt_image_text_size,
     &rt_image_oep,
     &rt_hook_streamlog,
+    &rt_hook_replace_lua_protected,
     &rt_guest_base,
     &rt_reloc_delta,
     &rt_lock_contended,

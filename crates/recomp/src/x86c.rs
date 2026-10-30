@@ -976,7 +976,14 @@ impl<'a> FunctionTranslator<'a> {
                     // A host hook point (--hooks): the host sees and may change the guest's
                     // state here, before this instruction runs; unset, it costs one test.
                     self.hooked.push(ins.address);
-                    body.push(Item::Line(format!("    if (rt_hook_{}) {{ REGS_STORE; rt_hook_{}(g); REGS_LOAD; }}", hook, hook)));
+                    if hook.starts_with("replace_") {
+                        // A replacing hook, at a function's entry: when set, the host runs the
+                        // whole function (its return address popped, its result in eax) and the
+                        // translation returns without running its own body.
+                        body.push(Item::Line(format!("    if (rt_hook_{}) {{ REGS_STORE; rt_hook_{}(g); REGS_LOAD; return RT_REGS_OUT; }}", hook, hook)));
+                    } else {
+                        body.push(Item::Line(format!("    if (rt_hook_{}) {{ REGS_STORE; rt_hook_{}(g); REGS_LOAD; }}", hook, hook)));
+                    }
                 }
             }
             body.push(Item::Line(format!("    /* {:08x}: {} {} */", ins.address, ins.mnemonic, ins.op_str)));
