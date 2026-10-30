@@ -30,7 +30,7 @@ const HEADERS: [(&str, &str); 6] = [
     ("xiv_game.h", include_str!("../../../runtime/xiv_game.h")),
     ("xiv_module.c", include_str!("../../../runtime/xiv_module.c")),
 ];
-const HOOKS: [(&str, u64); 1] = [("streamlog", 0x4e7290)];
+const HOOKS: [(&str, u64); 2] = [("streamlog", 0x4e7290), ("replace_lua_protected", 0xdcf140)];
 
 #[cfg(target_os = "macos")]
 const EXT: &str = "dylib";

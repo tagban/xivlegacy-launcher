@@ -29,7 +29,7 @@ rendering; performance is the work now.
 python3 tools/discover.py --game "<1.23b install>"            # once per build: meta/*.meta.json
 target/release/xivlegacy-recomp recomp --meta meta/ffxivgame.2012.09.19.0001.meta.json \
     --image generated/images/2012.09.19.0001/ffxivgame.exe --retail generated/images/2012.09.19.0001/ffxivgame.exe \
-    --out generated/c --all --patches meta/ffxivgame.2012.09.19.0001.patches.json --hooks streamlog=0x4e7290
+    --out generated/c --all --patches meta/ffxivgame.2012.09.19.0001.patches.json --hooks streamlog=0x4e7290,replace_lua_protected=0xdcf140
 python3 tools/build.py boot
 build/boot "<1.23b install>" <56-character session id>
 ```
@@ -52,7 +52,7 @@ button is No.
 
 | Variable | |
 |---|---|
-| `XIVLEGACY_CONTROL=<fifo>` | drive a running game: `key <name>`, `hold <key> <ms>`, `click <x> <y>`, `move <x> <y>`, `type <text>`, `snap <png>`, `stack`, `findf <x> <y> <z> [tol [hex from]]` (guest addresses holding a float triple), `findnan` (three NaN floats in a row), `look <button> <dx> <dy> <steps> [ms [still ms]]` (hold a mouse button and drag: mouse-look), `keydown <key>` / `keyup <key>`, `wheel <notches> [count]`, `stall <ms>` (hold the guest lock: a hitch), `dumpf <hex addr> [count]` (guest floats), `trace` (the next frame's targets, clears, copies and draws), `snaptex <id> <png>` (a texture or render target by its trace id; float formats scaled), `gfxdbg <n>` (1 wireframe, 2 gray textures, 3 gray render targets), `skipvs <id>`, `vsc` (current vertex constants), `cpuvs <id>` (the next draw with that vertex shader against the CPU interpreter), `onlyvs <id>` (draw only that shader in full-size passes), `dumpvs <id> [n]` (draw inputs), `watch <hex addr> [bytes]` / `unwatch` (log the translated functions that write there) |
+| `XIVLEGACY_CONTROL=<fifo>` | drive a running game: `key <name>`, `hold <key> <ms>`, `click <x> <y>`, `move <x> <y>`, `type <text>`, `snap <png>`, `stack`, `findf <x> <y> <z> [tol [hex from]]` (guest addresses holding a float triple), `findnan` (three NaN floats in a row), `luatest` (the next Lua protected call first checks that a Lua error lands back in it: `[lua] self-test` in the log), `look <button> <dx> <dy> <steps> [ms [still ms]]` (hold a mouse button and drag: mouse-look), `keydown <key>` / `keyup <key>`, `wheel <notches> [count]`, `stall <ms>` (hold the guest lock: a hitch), `dumpf <hex addr> [count]` (guest floats), `trace` (the next frame's targets, clears, copies and draws), `snaptex <id> <png>` (a texture or render target by its trace id; float formats scaled), `gfxdbg <n>` (1 wireframe, 2 gray textures, 3 gray render targets), `skipvs <id>`, `vsc` (current vertex constants), `cpuvs <id>` (the next draw with that vertex shader against the CPU interpreter), `onlyvs <id>` (draw only that shader in full-size passes), `dumpvs <id> [n]` (draw inputs), `watch <hex addr> [bytes]` / `unwatch` (log the translated functions that write there) |
 | `XIVLEGACY_KEYS="12:return,15:left,17:click@575x515"` | scripted input at seconds after start |
 | `XIVLEGACY_SNAP=<dir>`, `XIVLEGACY_SNAP_EVERY=<n>` | the back buffer as PNGs |
 | `XIVLEGACY_PROFILE=<seconds>:<delay>` | in-process sampling profiler (self/inclusive by function, per thread) |

@@ -33,6 +33,8 @@ void xiv_k32_init(void);
 void xiv_misc_init(void);
 void xiv_patches_apply(void); /* xiv_misc.c: after pe_load */
 void xiv_game_log_poll(void);  /* xiv_misc.c: each frame (XIVLEGACY_GAMELOG) */
+void xiv_lua_throw(Guest* g, uint32_t code, uint32_t nargs, uint32_t args); /* xiv_misc.c: from RaiseException */
+void xiv_lua_selftest(void); /* xiv_misc.c: the next Lua protected call first checks a throw comes back */
 void xiv_loading_poll(void);   /* xiv_misc.c: each frame, on the drawing thread */
 /* k32.c: when set, the time a Sleep sleeps, given its call site and the time asked for */
 extern uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);

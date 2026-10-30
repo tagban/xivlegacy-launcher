@@ -7,7 +7,9 @@
 //!
 //! `hooks` names instructions where the host may step in (--hooks name=0x...): before each,
 //! the translation calls the host function pointer rt_hook_<name> (GuestFn, defined in table.c,
-//! NULL until the host sets it) with the guest's registers stored, and reloads them after.
+//! NULL until the host sets it) with the guest's registers stored, and reloads them after. A hook
+//! named replace_<name>, at a function's entry, replaces the function while set: the translation
+//! returns right after it.
 use crate::disasm::Disasm;
 use crate::pe::Pe;
 use crate::program::Program;

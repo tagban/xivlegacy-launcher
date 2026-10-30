@@ -238,7 +238,8 @@ static void sh_CompareStringW(Guest* g) { compare_common(g, 1); }
  * chain (fs:[0], in the TEB) down to a target frame. That works here: handlers are guest
  * functions. What does not yet is RaiseException dispatching to a handler that resumes somewhere
  * else (a C++ catch, an __except block): that needs guest SEH support in the translation (R3 open
- * item), so it stops with the exception code rather than running on wrongly. */
+ * item), so it stops with the exception code rather than running on wrongly. The one exception
+ * the game throws in play, Lua's error, has its own way back (xiv_misc.c: xiv_lua_throw). */
 #define EH_UNWINDING 2u
 #define EH_EXIT_UNWIND 4u
 
@@ -270,6 +271,7 @@ static void sh_RaiseException(Guest* g)
     uint32_t code = ARG(0);
     if (code == 0x406D1388u) /* MS_VC_EXCEPTION: naming a thread for a debugger */
         RET(0, 4);
+    xiv_lua_throw(g, code, ARG(2), ARG(3)); /* a Lua error: back to its protected call (no return) */
     char msg[96];
     snprintf(msg, sizeof msg, "RaiseException(%08x): guest SEH dispatch is not supported yet", code);
     rt_fatal(g, 0, msg);
