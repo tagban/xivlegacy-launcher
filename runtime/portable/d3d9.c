@@ -278,11 +278,14 @@ static uint32_t addref(uint32_t p)
 static uint32_t release(uint32_t p)
 {
     Obj* o = obj(p);
-    if (!o || !o->refs)
+    if (!o)
         return 0;
-    /* a level surface's references are its texture's */
+    /* a level surface's references are its texture's (its own count stays 0, so look before the
+     * count: checking that first kept every texture whose levels were ever fetched alive) */
     if (o->container)
         return release(o->container);
+    if (!o->refs)
+        return 0;
     if (--o->refs)
         return o->refs;
     obj_free(o);
@@ -329,6 +332,19 @@ static void obj_free(Obj* o)
     o->guest = 0;
     if (i < g_free_hint)
         g_free_hint = i;
+}
+
+/* Live objects per kind and the guest memory they hold, for the memstat command. */
+void d3d9_stats(void)
+{
+    uint32_t n[K_KINDS] = { 0 };
+    uint64_t bytes[K_KINDS] = { 0 };
+    for (uint32_t i = 0; i < g_nobjs; ++i)
+        if (g_objs[i].kind >= 0)
+            ++n[g_objs[i].kind], bytes[g_objs[i].kind] += g_objs[i].mem ? g_objs[i].size : 0;
+    for (int k = 0; k < K_KINDS; ++k)
+        if (n[k])
+            rt_log("  %-24s %6u live, %6llu KB guest\n", IFACES[k].iface, n[k], (unsigned long long)(bytes[k] / 1024));
 }
 
 /* The guest memory of a surface, volume or buffer, made on first use. */

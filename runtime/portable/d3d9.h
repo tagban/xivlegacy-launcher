@@ -17,5 +17,6 @@ uint32_t d3d9_create_texture(int type, uint32_t w, uint32_t h, uint32_t d, uint3
     uint32_t pool);
 /* The memory of a surface or volume; 0 if `p` is neither. */
 int d3d9_resource_mem(uint32_t p, D3d9Mem* out);
+void d3d9_stats(void); /* logs live objects per kind and their guest memory */
 uint32_t d3d9_fmt_block(uint32_t fmt); /* bytes per 4x4 block, 0 if uncompressed */
 uint32_t d3d9_fmt_bytes(uint32_t fmt); /* bytes per pixel */

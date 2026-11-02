@@ -23,6 +23,7 @@
 
 #include "dinput.h"
 #include "gthread.h"
+#include "d3d9.h"
 #include "gwin.h"
 #include "k32.h"
 #include "pe.h"
@@ -858,6 +859,18 @@ static void control_thread(void* arg)
             }
             else if (!strcmp(line, "unwatch"))
                 watch_stop();
+            else if (!strcmp(line, "memstat"))
+            {
+                uint32_t res, com, run;
+                gwin_stats(&res, &com, &run);
+                uint64_t large, runs;
+                gheap_stats(&large, &runs);
+                printf("[boot] memstat: %u MB reserved, %u MB committed, largest free %u MB; heap: %llu MB large blocks, %llu MB small runs\n",
+                    res / 16, com / 256, run / 16, (unsigned long long)(large >> 20), (unsigned long long)(runs >> 20));
+                fflush(stdout);
+                d3d9_stats();
+                gwin_log_reservations();
+            }
             else if (!strcmp(line, "stack"))
             {
                 pthread_kill(g_main_thread, SIGUSR2);
