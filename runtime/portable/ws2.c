@@ -8,7 +8,10 @@
  *
  * WSAEventSelect is a watcher thread polling every socket that has an event: it records the
  * network events Winsock would (FD_READ, FD_WRITE, FD_ACCEPT, FD_CONNECT, FD_CLOSE), with
- * Winsock's re-enabling rules, and sets the event. Blocking calls release the guest lock. */
+ * Winsock's re-enabling rules, and sets the event. Blocking calls release the guest lock.
+ *
+ * A server that goes quiet while the game keeps talking to it is taken for a lost connection
+ * (see silence_check): the game itself only does something about a connection that closes. */
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -99,6 +102,10 @@ typedef struct Sock
     uint32_t pending;     /* network events recorded, not yet enumerated */
     uint32_t enabled;     /* which events may be recorded again */
     int errors[10];       /* iErrorCode by FD_*_BIT */
+    uint64_t last_rx_ms;  /* when data last came in (or the connect) */
+    uint64_t sent_ms[5];  /* when the last sends went out, oldest overwritten */
+    uint32_t sent_n;
+    int lost;             /* shut down by silence_check */
 } Sock;
 
 static Sock g_socks[MAX_SOCKS];
@@ -148,6 +155,8 @@ static uint32_t wsa_error(int e)
 }
 
 static void fail(void) { gt_set_error(wsa_error(host_errno())); }
+
+static uint64_t now_ms(void) { return rt_monotonic_ns() / 1000000u; }
 
 static Sock* sock(uint32_t s)
 {
@@ -353,6 +362,7 @@ static void sh_connect(Guest* g)
      * WSAEventSelect, which wait for FD_CONNECT. */
     if (r != 0 && nb && !s->mask && wsa_error(e) == WSAEWOULDBLOCK && connect_settles(s->h, 250))
         r = 0;
+    s->last_rx_ms = now_ms(), s->sent_n = 0, s->lost = 0;
     if (r != 0)
     {
         gt_set_error(wsa_error(e));
@@ -422,6 +432,74 @@ static void io_done(Sock* s, uint32_t bit, int would_block)
 
 static int host_flags(uint32_t f) { return (f & 1 ? MSG_OOB : 0) | (f & 2 ? MSG_PEEK : 0); }
 
+/* The game only leaves the world when its connection closes: then it shows its own game server
+ * error box (code 30002) and, on Accept, goes back to the character list. A server that stops
+ * answering without closing (the map server behind the world server dies, a link drops) leaves it
+ * in a frozen world for good, the HUD's R at 0 and the link icon red.
+ *
+ * In the world the server sends something about every second (the game sends several times a
+ * second); at the character list the game sends a keep-alive a minute that may go unanswered. So a
+ * TCP connection on which the game has sent at least 5 times within the last XIVLEGACY_NET_TIMEOUT
+ * seconds (45; 0 turns this off) while nothing at all came in, not even unread, is lost: it and
+ * every other connection to the same server are shut down, and the game takes its own path for a
+ * closed connection. Checked as the game sends. */
+static uint32_t net_timeout_ms(void)
+{
+    static int64_t ms = -1;
+    if (ms < 0)
+    {
+        const char* v = getenv("XIVLEGACY_NET_TIMEOUT");
+        ms = v && *v ? (int64_t)strtol(v, NULL, 10) * 1000 : 45000;
+        if (ms < 0)
+            ms = 0;
+    }
+    return (uint32_t)ms;
+}
+
+static void silence_check(Sock* s)
+{
+    uint32_t limit = net_timeout_ms();
+    if (s->type != 1 || s->listening || s->lost || !limit)
+        return;
+    uint64_t now = now_ms();
+    uint32_t k = sizeof s->sent_ms / sizeof s->sent_ms[0];
+    s->sent_ms[s->sent_n++ % k] = now;
+    if (s->sent_n < k || now - s->last_rx_ms < limit || now - s->sent_ms[s->sent_n % k] > limit)
+        return;
+#if defined(_WIN32)
+    u_long unread = 0;
+    ioctlsocket(s->h, FIONREAD, &unread);
+#else
+    int unread = 0;
+    ioctl(s->h, FIONREAD, &unread);
+#endif
+    if (unread > 0) /* the game hasn't read it yet: the server is there */
+    {
+        s->last_rx_ms = now;
+        return;
+    }
+    struct sockaddr_in peer, other;
+    socklen_t len = sizeof peer;
+    if (getpeername(s->h, (struct sockaddr*)&peer, &len) != 0)
+        memset(&peer, 0, sizeof peer);
+    rt_log("[ws2] nothing from %s:%u for %u s while sending to it: connection lost, closing it\n", inet_ntoa(peer.sin_addr),
+           ntohs(peer.sin_port), (unsigned)((now - s->last_rx_ms) / 1000));
+    lock();
+    for (int i = 0; i < MAX_SOCKS; ++i)
+    {
+        Sock* o = &g_socks[i];
+        len = sizeof other;
+        if (o->used && o->type == 1 && !o->listening && !o->lost &&
+            (o == s || (getpeername(o->h, (struct sockaddr*)&other, &len) == 0 && other.sin_addr.s_addr == peer.sin_addr.s_addr &&
+                        other.sin_port == peer.sin_port)))
+        {
+            o->lost = 1;
+            shutdown(o->h, 2); /* SHUT_RDWR / SD_BOTH: the game's next read finds it closed */
+        }
+    }
+    unlock();
+}
+
 static void sh_send(Guest* g)
 {
     Sock* s = sock(ARG(0));
@@ -455,6 +533,8 @@ static void sh_send(Guest* g)
         io_done(s, FD_WRITE, gt_get_error() == WSAEWOULDBLOCK);
         RET(GUEST_SOCKET_ERROR, 4);
     }
+    if (n > 0)
+        silence_check(s);
     RET((uint32_t)n, 4);
 }
 
@@ -493,6 +573,19 @@ static void sh_recv(Guest* g)
     if (!nb)
         gt_lock();
     io_done(s, FD_READ, 0);
+    if (n > 0)
+        s->last_rx_ms = now_ms();
+    else if (s->type == 1 && !s->lost && !(n < 0 && wsa_error(e) == WSAEWOULDBLOCK))
+    {
+        struct sockaddr_in peer;
+        socklen_t len = sizeof peer;
+        if (getpeername(s->h, (struct sockaddr*)&peer, &len) == 0) /* gone once the peer resets it */
+            rt_log("[ws2] connection to %s:%u closed by the server (%s)\n", inet_ntoa(peer.sin_addr), ntohs(peer.sin_port),
+                   n == 0 ? "closed" : "error");
+        else
+            rt_log("[ws2] connection closed by the server (%s)\n", n == 0 ? "closed" : "error");
+        s->lost = 1;
+    }
     if (n < 0)
     {
         gt_set_error(wsa_error(e));
