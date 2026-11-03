@@ -14,7 +14,7 @@ rendering; performance is the work now.
 | Where | What |
 |---|---|
 | `discovery/`, `tools/discover.py` | Ghidra (11.3, Jython) finds every function: the per-build metadata in `meta/` (addresses only) |
-| `meta/ffxivgame.<build>.patches.json` | instruction patches applied before translation (the 2012 clock pin and two crash guards, as Garlemald Client and Seventh Umbral patch the exe; the action bar shown outside active mode by default) |
+| `meta/ffxivgame.<build>.patches.json` | instruction patches applied before translation (the 2012 clock pin and two crash guards, as Garlemald Client and Seventh Umbral patch the exe; the action bar shown outside active mode, a more solid chat window and the profanity filter off by default) |
 | `crates/recomp` | the recompiler: x86 + x87 + SSE/SSE2/MMX to C, `generated/c/` |
 | `runtime/portable/` | the Windows the game sees: kernel32, user32 (SDL3 windows, input, COMCTL32 subclassing), ws2_32, ole32, registry, file system mounts, fibers, XAudio2 2.4 (SDL3 audio), DirectInput/XInput, WinHTTP, D3D9 + D3DX |
 | `runtime/portable/d3d9.c` | Direct3D 9: objects, state, state blocks, resources; hands draws to `gfx9.h` |

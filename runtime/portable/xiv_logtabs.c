@@ -11,7 +11,12 @@
  *    script (Lua 5.1 bytecode XOR 0x73 after a 13-byte header), not carried by XIVLegacy.
  *  - Characters made before: their saved settings (Documents\My Games\FINAL FANTASY XIV\user\<id>\game)
  *    are switched the same way once, if they still have the old layout, and marked so a later choice
- *    in Config > Log stands. */
+ *    in Config > Log stands.
+ *
+ * Also the defaults the exe patches change (meta/...patches.json): the log windows less transparent
+ * (logwin_trans1 3 -> 2, logwin_trans2 7 -> 6) and the profanity filter off (vulgar 1 -> 0). A
+ * character saved before keeps the old defaults in its file, so each one still at an old default
+ * moves to the new one, once (marker xivlegacy-ui-defaults); a value someone chose stays. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +27,7 @@
 
 #define SCRIPT_HEADER 13 /* "rle\x0c", 2 words, 1 byte: the bytecode follows, XOR 0x73 */
 #define MARKER "xivlegacy-battle-tab"
+#define DEFAULTS_MARKER "xivlegacy-ui-defaults"
 
 /* The client's script files are named with letters and digits mirrored ("abc..z0..9" read backwards). */
 static char mirror(char c)
@@ -402,6 +408,60 @@ static void migrate_one(const char* dir)
     free(d);
 }
 
+/* one setting from the game's old default to the new one, if it still has the old (single digits) */
+static int redefault(char* text, const char* name, char from, char to)
+{
+    size_t len = 0;
+    char* v = setting(text, name, &len);
+    if (!v || len != 1 || *v != from)
+        return 0;
+    *v = to;
+    return 1;
+}
+
+static void defaults_one(const char* dir)
+{
+    char path[1400], marker[1400];
+    snprintf(path, sizeof path, "%s/game", dir);
+    snprintf(marker, sizeof marker, "%s/" DEFAULTS_MARKER, dir);
+    PlatStat st;
+    if (!plat_stat(path, &st) || plat_stat(marker, &st))
+        return;
+    size_t n = 0;
+    uint8_t* d = plat_read_file(path, &n);
+    if (!d || n < 2)
+    {
+        free(d);
+        return;
+    }
+    char* text = (char*)malloc(n + 1);
+    for (size_t i = 0; i < n; ++i)
+        text[i] = (char)(d[i] ^ 0x73);
+    text[n] = 0;
+    text[0] = '\n';
+    int changed = redefault(text, "logwin_trans1", '3', '2') + redefault(text, "logwin_trans2", '7', '6') +
+                  redefault(text, "vulgar", '1', '0');
+    int ok = 1;
+    if (changed)
+    {
+        for (size_t i = 1; i < n; ++i)
+            d[i] = (uint8_t)text[i] ^ 0x73;
+        PlatFile* f = plat_file_open(path, PLAT_WRITE | PLAT_TRUNCATE);
+        ok = f && plat_file_write(f, d, (uint32_t)n) == (int64_t)n;
+        if (f)
+            plat_file_close(f);
+        rt_log("[logtabs] %s: %d setting(s) %s\n", path, changed, ok ? "moved to the new defaults" : "not moved (cannot write)");
+    }
+    if (ok)
+    {
+        PlatFile* m = plat_file_open(marker, PLAT_WRITE | PLAT_CREATE | PLAT_TRUNCATE);
+        if (m)
+            plat_file_close(m);
+    }
+    free(text);
+    free(d);
+}
+
 void xiv_logtabs_migrate(const char* user_dir)
 {
     char root[1200];
@@ -416,6 +476,7 @@ void xiv_logtabs_migrate(const char* user_dir)
         char d[1400];
         snprintf(d, sizeof d, "%s/%s", root, e);
         migrate_one(d);
+        defaults_one(d);
     }
     plat_dir_close(dir);
 }
