@@ -20,6 +20,21 @@
       "va": "0x004C47FB",
       "bytes": "FE8424480B00006A016A01555555",
       "why": "the character setting nohide_action (keep the action bar up outside active mode) defaults to 1: inc byte ptr [esp+0xb48] in place of the 8-byte mov of 3 into the same unwind-state byte (it holds 2 here), which frees the byte for push 1 as the default ahead of max 1, min 0 and the two slot arguments. A character's saved game settings still win."
+    },
+    {
+      "va": "0x004C492F",
+      "bytes": "6A02",
+      "why": "the character setting logwin_trans1 (the main log window's transparency, 0 solid to 10 clear) defaults to 2 in place of 3: push 2 as the default ahead of max 10 and min 0. The chat was hard to read over bright scenes. A character's saved game settings still win."
+    },
+    {
+      "va": "0x004C496C",
+      "bytes": "6A06",
+      "why": "logwin_trans2 (the second log window's transparency) defaults to 6 in place of 7, the same way"
+    },
+    {
+      "va": "0x004C5864",
+      "bytes": "6A00",
+      "why": "the character setting vulgar (the profanity filter) defaults to 0, off, in place of 1: push 0 as the default ahead of max 1 and min 0"
     }
   ]
 }
