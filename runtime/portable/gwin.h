@@ -18,11 +18,15 @@ void gwin_decommit(uint32_t addr, uint32_t size);
 void gwin_release(uint32_t addr); /* a whole reservation, by its start */
 uint32_t gwin_alloc(uint32_t size); /* reserve + commit anywhere */
 int gwin_is_committed(uint32_t addr);
+/* Granules reserved and pages committed (64 KB / 4 KB units), and the largest run of free granules. */
+void gwin_stats(uint32_t* reserved, uint32_t* committed, uint32_t* largest_free);
+void gwin_log_reservations(void); /* logs the reservation sizes holding the most address space */
 
 /* Heap. Every heap handle shares one allocator; the handles only keep identities apart.
  * Callers hold the guest lock (the runtime's own startup code runs before any other thread). */
 uint32_t gheap_alloc(uint32_t size, int zero);
 void gheap_free(uint32_t p);
 uint32_t gheap_realloc(uint32_t p, uint32_t size, int zero, int in_place_only);
-uint32_t gheap_size(uint32_t p); /* ~0u if p is not a live block */
+uint32_t gheap_size(uint32_t p);
+void gheap_stats(uint64_t* large, uint64_t* runs); /* bytes reserved for large blocks and small-block runs */ /* ~0u if p is not a live block */
 uint32_t gheap_strdup(const char* s);

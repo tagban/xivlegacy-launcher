@@ -6,6 +6,7 @@
  * the Win32 thread rather than the fiber - its TEB, thread id and TlsAlloc slots - goes with the
  * switch, and the TEB's per-fiber fields (SEH chain, stack bounds, FiberData) are swapped, as
  * Windows does. A fiber may be resumed by a different thread than the one that left it. */
+#include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,6 +30,7 @@ typedef struct Fiber
     uint32_t seh, sbase, slimit; /* the TEB's per-fiber fields while switched out */
     volatile uint32_t run;       /* set to resume the parked host thread */
     int has_thread, dead, game;
+    jmp_buf exit;                /* a created fiber's host thread, back to fiber_main once deleted */
 } Fiber;
 
 static Fiber* g_fibers[MAX_FIBERS];
@@ -46,16 +48,30 @@ static Fiber* fiber_of(uint32_t p)
 
 static Fiber* fiber_new(uint32_t param)
 {
-    if (g_nfibers == MAX_FIBERS)
+    /* a deleted fiber's slot first: the game makes and deletes fibers with every zone it loads */
+    unsigned i = 0;
+    while (i < g_nfibers && g_fibers[i])
+        ++i;
+    if (i == MAX_FIBERS)
         return NULL;
     Fiber* f = (Fiber*)calloc(1, sizeof *f);
     f->guest = gheap_alloc(16, 1);
     f->param = param;
     wr32(f->guest, param);
     wr32(f->guest + 4, FIBER_MAGIC);
-    wr32(f->guest + 8, g_nfibers);
-    g_fibers[g_nfibers++] = f;
+    wr32(f->guest + 8, i);
+    g_fibers[i] = f;
+    if (i == g_nfibers)
+        ++g_nfibers;
     return f;
+}
+
+/* What a deleted fiber's host thread does last: its guest stack and its records go. */
+static void fiber_free(Fiber* f)
+{
+    gwin_release(f->stack_lo);
+    free(f->gt);
+    free(f);
 }
 
 /* ConvertThreadToFiber(param) */
@@ -105,6 +121,12 @@ static void sh_CreateFiberEx(Guest* g)
 static void fiber_main(void* arg)
 {
     Fiber* f = (Fiber*)arg;
+    if (setjmp(f->exit))
+    {
+        /* deleted while parked (DeleteFiber): out through its translated frames, which are plain C */
+        fiber_free(f);
+        return;
+    }
     while (!f->run)
         plat_wait32(&f->run, 0);
     gt_fiber_enter(f->gt, f->game);
@@ -173,11 +195,16 @@ static void sh_SwitchToFiber(Guest* g)
 
     while (!cur->run)
         plat_wait32(&cur->run, 0);
+    if (cur->dead && cur->stack_lo)
+        longjmp(cur->exit, 1); /* DeleteFiber woke us to end this host thread */
     gt_fiber_enter(cur->gt, cur->game);
 }
 
-/* DeleteFiber(fiber): a parked fiber's host thread stays parked (the job system deletes its
- * fibers at exit); its guest stack is kept, as frames on the host side still point into it. */
+/* DeleteFiber(fiber): a created fiber that is parked is woken to end its host thread, which then
+ * releases its guest stack (the frames on its host side are gone by then); one never run is freed
+ * here. The game deletes and makes fibers with every zone it loads (about 90 a trip into the Waking
+ * Sands and out), so keeping them ran the guest window out of room after some forty trips. A fiber
+ * running on another thread, or a converted thread, is only marked dead, as before. */
 static void sh_DeleteFiber(Guest* g)
 {
     Fiber* f = fiber_of(ARG(0));
@@ -190,6 +217,18 @@ static void sh_DeleteFiber(Guest* g)
     {
         f->dead = 1;
         wr32(f->guest + 4, 0);
+        if (f->stack_lo && !f->run)
+        {
+            g_fibers[rd32(f->guest + 8)] = NULL;
+            gheap_free(f->guest);
+            if (f->has_thread)
+            {
+                f->run = 1;
+                plat_wake_all32(&f->run);
+            }
+            else
+                fiber_free(f);
+        }
     }
     RET(0, 1);
 }

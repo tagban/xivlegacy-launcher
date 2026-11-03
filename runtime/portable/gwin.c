@@ -95,6 +95,14 @@ uint32_t gwin_reserve(uint32_t addr, uint32_t size)
         if (!start)
         {
             unlock();
+            static int warned;
+            if (warned++ < 8)
+            {
+                uint32_t res, com, run;
+                gwin_stats(&res, &com, &run);
+                rt_log("[gwin] out of guest address space: %u KB wanted; %u MB reserved, %u MB committed, largest free %u KB\n",
+                    n * (GRANULE / 1024), res / 16, com / 256, run * (GRANULE / 1024));
+            }
             return 0;
         }
         g_hint = start + n;
@@ -154,6 +162,55 @@ uint32_t gwin_alloc(uint32_t size)
     return a;
 }
 
+void gwin_stats(uint32_t* reserved, uint32_t* committed, uint32_t* largest_free)
+{
+    uint32_t res = 0, com = 0, best = 0, run = 0;
+    lock();
+    for (uint32_t g = LOW_RESERVED / GRANULE; g < HIGH_RESERVED / GRANULE; ++g)
+    {
+        res += g_used[g];
+        run = g_used[g] ? 0 : run + 1;
+        if (run > best)
+            best = run;
+    }
+    for (uint32_t i = 0; i < sizeof g_committed; ++i)
+        com += (uint32_t)__builtin_popcount(g_committed[i]);
+    unlock();
+    *reserved = res, *committed = com, *largest_free = best;
+}
+
+void gwin_log_reservations(void)
+{
+    /* the ten sizes holding the most address space */
+    static uint32_t size[4096], count[4096];
+    uint32_t n = 0;
+    lock();
+    for (uint32_t g = LOW_RESERVED / GRANULE; g < HIGH_RESERVED / GRANULE; ++g)
+        if (g_res[g])
+        {
+            uint32_t i = 0;
+            while (i < n && size[i] != g_res[g])
+                ++i;
+            if (i == n && n < 4096)
+                size[n] = g_res[g], count[n++] = 0;
+            if (i < n)
+                ++count[i];
+        }
+    unlock();
+    for (int k = 0; k < 10; ++k)
+    {
+        uint32_t best = n;
+        for (uint32_t i = 0; i < n; ++i)
+            if (count[i] && (best == n || (uint64_t)size[i] * count[i] > (uint64_t)size[best] * count[best]))
+                best = i;
+        if (best == n)
+            break;
+        rt_log("  reservations of %6u KB: %5u (%u MB)\n", size[best] * (GRANULE / 1024), count[best],
+            (uint32_t)((uint64_t)size[best] * count[best] * GRANULE >> 20));
+        count[best] = 0;
+    }
+}
+
 int gwin_is_committed(uint32_t addr)
 {
     uint32_t p = addr / PAGE;
@@ -177,6 +234,7 @@ static const uint32_t CLASS_SIZE[] = {
 #define CLASSES (sizeof CLASS_SIZE / sizeof CLASS_SIZE[0])
 
 static uint32_t g_free[CLASSES], g_bump[CLASSES], g_bump_end[CLASSES];
+static uint64_t g_large_bytes, g_run_bytes; /* the heap's own reservations, for gheap_stats */
 
 static unsigned class_for(uint32_t total)
 {
@@ -198,6 +256,7 @@ uint32_t gheap_alloc(uint32_t size, int zero)
         h = gwin_alloc((uint32_t)total);
         if (!h)
             return 0;
+        g_large_bytes += (total + GRANULE - 1) & ~(uint64_t)(GRANULE - 1);
     }
     else if (g_free[c])
     {
@@ -213,6 +272,7 @@ uint32_t gheap_alloc(uint32_t size, int zero)
                 return 0;
             g_bump[c] = run;
             g_bump_end[c] = run + RUN;
+            g_run_bytes += RUN;
         }
         h = g_bump[c];
         g_bump[c] += CLASS_SIZE[c];
@@ -237,12 +297,20 @@ void gheap_free(uint32_t p)
     unsigned c = rd32(h + 4) & 0xFFFFu;
     wr32(h + 4, 0); /* no longer live: a double free is ignored */
     if (c == CLASS_LARGE)
+    {
+        g_large_bytes -= (uint64_t)g_res[h / GRANULE] * GRANULE; /* in-place reallocs change the size, not this */
         gwin_release(h);
+    }
     else
     {
         wr32(h + 8, g_free[c]);
         g_free[c] = h;
     }
+}
+
+void gheap_stats(uint64_t* large, uint64_t* runs)
+{
+    *large = g_large_bytes, *runs = g_run_bytes;
 }
 
 uint32_t gheap_size(uint32_t p)

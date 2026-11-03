@@ -435,6 +435,23 @@ static void encode(uint32_t f, uint8_t* p, const float* c)
     }
 }
 
+/* Whether every page of guest [p, p+n) is committed. */
+static int committed(uint32_t p, uint32_t n)
+{
+    if (!n)
+        return 1;
+    if (p + n - 1 < p)
+        return 0;
+    for (uint32_t a = p & ~0xFFFu; a <= ((p + n - 1) & ~0xFFFu); a += 0x1000)
+    {
+        if (!gwin_is_committed(a))
+            return 0;
+        if (a == 0xFFFFF000u)
+            break;
+    }
+    return 1;
+}
+
 /* Copy the source box at `src` (row pitch sp, slice pitch ss, format sf) into the destination box of
  * `dst`, converting between the formats above; sizes that differ are point-sampled (uncompressed)
  * or clipped (compressed, which must match). */
@@ -459,6 +476,23 @@ static uint32_t load(const D3d9Mem* dst, Box db, uint32_t src, uint32_t sf, uint
     if (!sd)
         sd = 1;
     uint32_t dbpp = d3d9_fmt_bytes(dst->fmt), sbpp = convert ? d3d9_fmt_bytes(sf) : dbpp;
+    /* The game can hand over a source that is not there: leaving the Waking Sands it asked for mip 1
+     * at "texture data + size of mip 0" with no texture data, i.e. guest 0x80000 for a 512x512 R5G6B5.
+     * Windows read whatever was mapped there; here that page is not, so refuse the copy instead. */
+    {
+        uint64_t first = (uint64_t)src + (uint64_t)sb.front * ss
+            + (block ? (uint64_t)(sb.t / 4) * sp + (uint64_t)(sb.l / 4) * block : (uint64_t)sb.t * sp + (uint64_t)sb.l * sbpp);
+        uint64_t last = (uint64_t)src + (uint64_t)(sb.front + sd - 1) * ss
+            + (block ? (uint64_t)((sb.b + 3) / 4 - 1) * sp + (uint64_t)((sb.r + 3) / 4) * block
+                     : (uint64_t)(sb.b - 1) * sp + (uint64_t)sb.r * sbpp);
+        if (last > 0x100000000ull || last <= first || !committed((uint32_t)first, (uint32_t)(last - first)))
+        {
+            static int bad;
+            if (!bad++)
+                rt_log("[d3dx9] source %#x (format %#x, %ux%u) is not mapped; not loaded\n", src, sf, sw, sh);
+            return D3DERR_INVALIDCALL;
+        }
+    }
     for (uint32_t z = 0; z < dd; ++z)
     {
         uint32_t szi = sb.front + (z * sd) / dd;
