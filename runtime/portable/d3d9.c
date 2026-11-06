@@ -1693,6 +1693,10 @@ static void present(void)
     xiv_game_log_poll();
     xiv_loading_poll();
     xiv_pace_frame();
+    {
+        extern void xkb_frame(void); /* a knockback slide in progress (xiv_knockback_game.c) */
+        xkb_frame();
+    }
     /* XIVLEGACY_MOTIONLOG=<file>: each presented frame, the camera as the game left it (its inverse
      * view matrix at 0x013085A0: rows right, up, forward, position) and the main loop's ticks since
      * the frame before: how evenly turning and running move from frame to frame (tools/motion.py) */
