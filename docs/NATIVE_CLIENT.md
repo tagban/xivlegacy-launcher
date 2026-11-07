@@ -70,6 +70,7 @@ button is No.
 | `XIVLEGACY_LONGCALLS=<ms>` | each import call that took at least that long, with its thread and call site (what the game waits in when it looks idle) |
 | `XIVLEGACY_FILES_TRACE=1` | every file the game opens, with its handle |
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |
+| `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too; without it only an actor freed before its turn is logged |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 
@@ -104,6 +105,12 @@ button is No.
 - The drawing thread runs ~340 million instructions a frame at about 3 per cycle; three quarters of
   the guest memory references in the translation are stack traffic (push/pop, [esp+d]). Fewer
   instructions alone (folded addresses, ThinLTO) did not change the frame rate.
+- Actors are deleted a frame late: the world's remove-actor pushes them onto a vector (0x134DFA0)
+  that 0x7D2C40 drains in two batches. Destroying one actor can free another still waiting in the
+  second batch, and the next pass called through it (the FATAL in 0x65DD20 / 0x65DD40 / 0x7D27A0).
+  The game frees through its own allocator (0x40DF70, which enters a critical section first), not
+  HeapFree; the runtime watches that and drops freed actors from the batch (`xiv_crashlog.c`).
+  A FATAL or crash also logs who freed what the registers point into, and the last game packets.
 - The CRT's x87 math dispatch jumps through unaligned tables (`discovery/CrtDispatch.py`); the
   MSSMIXER section holds a CPU check outside `.text` (a native stand-in in `xiv_misc.c`).
 

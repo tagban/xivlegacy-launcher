@@ -14,6 +14,7 @@
 #include "pe.h"
 #include "plat.h"
 #include "thunk.h"
+#include "xiv_crashlog.h"
 
 #if defined(_MSC_VER)
 #define stricmp_ _stricmp
@@ -179,8 +180,17 @@ static uint32_t g_next_heap = PROCESS_HEAP + 0x1000u;
 static void sh_GetProcessHeap(Guest* g) { RET(PROCESS_HEAP, 0); }
 static void sh_HeapCreate(Guest* g) { uint32_t h = g_next_heap; g_next_heap += 0x1000u; RET(h, 3); }
 static void sh_HeapDestroy(Guest* g) { RET(1, 1); }
-static void sh_HeapAlloc(Guest* g) { RET(gheap_alloc(ARG(2), (ARG(1) & HEAP_ZERO_MEMORY) != 0), 3); }
-static void sh_HeapFree(Guest* g) { gheap_free(ARG(2)); RET(1, 3); }
+static void sh_HeapAlloc(Guest* g)
+{
+    xcl_note_alloc(g->esp);
+    RET(gheap_alloc(ARG(2), (ARG(1) & HEAP_ZERO_MEMORY) != 0), 3);
+}
+static void sh_HeapFree(Guest* g)
+{
+    xcl_note_free(ARG(2), gheap_size(ARG(2)), g->esp); /* a game object's delete, for the crash log */
+    gheap_free(ARG(2));
+    RET(1, 3);
+}
 static void sh_HeapSize(Guest* g) { RET(gheap_size(ARG(2)), 3); }
 static void sh_HeapValidate(Guest* g) { RET(1, 3); }
 static void sh_HeapCompact(Guest* g) { RET(0, 2); }
@@ -320,6 +330,7 @@ static void sh_DeleteCriticalSection(Guest* g) { RET(0, 1); }
 
 static void sh_EnterCriticalSection(Guest* g)
 {
+    xcl_note_cs(g->esp); /* the game allocator's frees, for the deferred actor delete (xiv_crashlog.c) */
     uint32_t cs = ARG(0), tid = gt_self()->tid;
     while (!cs_try(cs, tid))
     {

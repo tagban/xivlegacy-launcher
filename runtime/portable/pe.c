@@ -7,6 +7,7 @@
 #include "gthread.h"
 #include "gwin.h"
 #include "pe.h"
+#include "xiv_crashlog.h"
 #include "plat.h"
 #include "thunk.h"
 
@@ -51,12 +52,20 @@ static int map_build(const char* path, const Build* b)
     }
     memcpy(GUEST_PTR(load_base), f, headers < size ? headers : size);
     const unsigned char* sec = oh + rd16b(fh + 16);
+    uint32_t text_lo = 0, text_hi = 0, rdata_lo = 0, rdata_hi = 0;
     for (unsigned s = 0; s < nsec; ++s, sec += 40)
     {
         uint32_t va = rd32b(sec + 12), raw = rd32b(sec + 16), ptr = rd32b(sec + 20);
         if (raw && ptr + raw <= size)
             memcpy(GUEST_PTR(load_base + va), f + ptr, raw);
+        /* code and read-only data, for the crash log's return addresses and vtables */
+        uint32_t vs = rd32b(sec + 8);
+        if (!memcmp(sec, ".text", 6))
+            text_lo = load_base + va, text_hi = load_base + va + vs;
+        else if (!memcmp(sec, ".rdata", 7))
+            rdata_lo = load_base + va, rdata_hi = load_base + va + vs;
     }
+    xcl_set_image(text_lo, text_hi, rdata_lo, rdata_hi);
     free(f);
 
     uint32_t opt = load_base + nt + 24; /* the optional header, in the mapped headers */

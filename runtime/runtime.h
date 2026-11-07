@@ -53,6 +53,9 @@ void rt_log(const char* fmt, ...);
 void rt_set_log(FILE* f);
 typedef void (*RtFatalHook)(uint32_t addr, const char* what);
 void rt_set_fatal_hook(RtFatalHook h);
+/* Runs at a FATAL before the fatal hook, with the guest registers: more to the log (xiv_crashlog.c). */
+typedef void (*RtFatalReport)(const Guest* g);
+void rt_set_fatal_report(RtFatalReport r);
 
 /* Monotonic nanoseconds, from the platform layer (64-bit hosts: rdtsc is built on it). */
 uint64_t rt_monotonic_ns(void);

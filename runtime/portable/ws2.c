@@ -48,6 +48,7 @@ static int host_errno(void) { return errno; }
 #include "plat.h"
 #include "thunk.h"
 #include "ws2.h"
+#include "xiv_crashlog.h"
 #include "xiv_knockback.h"
 
 #define WSAEINTR 10004u
@@ -253,6 +254,7 @@ static void sh_socket(Guest* g)
             memset(s, 0, sizeof *s);
             s->used = 1, s->h = h, s->type = type;
             xkb_stream_reset((int)(s - g_socks));
+            xcl_stream_reset((int)(s - g_socks));
             s->enabled = FD_READ | FD_WRITE | FD_OOB | FD_ACCEPT | FD_CONNECT | FD_CLOSE;
             unlock();
             RET(sock_id(s), 3);
@@ -401,6 +403,7 @@ static void sh_accept(Guest* g)
             memset(n, 0, sizeof *n);
             n->used = 1, n->h = h, n->type = s->type;
             xkb_stream_reset((int)(n - g_socks));
+            xcl_stream_reset((int)(n - g_socks));
             n->enabled = FD_READ | FD_WRITE | FD_OOB | FD_CLOSE;
             if (s->event) /* an accepted socket inherits WSAEventSelect */
                 n->event = s->event, n->mask = s->mask, n->nonblocking = 1, set_nonblocking(h, 1);
@@ -459,6 +462,8 @@ static void sh_send(Guest* g)
         io_done(s, FD_WRITE, gt_get_error() == WSAEWOULDBLOCK);
         RET(GUEST_SOCKET_ERROR, 4);
     }
+    if (n > 0)
+        xcl_packets((int)(s - g_socks), 1, (const uint8_t*)ARGP(1), (uint32_t)n);
     RET((uint32_t)n, 4);
 }
 
@@ -505,6 +510,8 @@ static void sh_recv(Guest* g)
     /* a knockback warp with our server's note: slide instead (xiv_knockback.c) */
     if (n > 0)
         xkb_scan((int)(s - g_socks), (uint8_t*)ARGP(1), (uint32_t)n, xkb_begin);
+    if (n > 0)
+        xcl_packets((int)(s - g_socks), 0, (const uint8_t*)ARGP(1), (uint32_t)n); /* the crash log's last packets */
     RET((uint32_t)n, 4);
 }
 

@@ -34,6 +34,7 @@
 #include "vfs.h"
 #include "ws2.h"
 #include "xiv_boot.h"
+#include "xiv_crashlog.h"
 
 #define GAME_DIR "C:\\Program Files\\SquareEnix\\FINAL FANTASY XIV"
 /* The user profile the game sees (Documents\\My Games\\..., AppData) lives in a folder of ours. */
@@ -742,7 +743,8 @@ static void control_thread(void* arg)
                         e.key.key = SDLK_LSHIFT, e.key.mod = SDL_KMOD_LSHIFT;
                         SDL_PushEvent(&e);
                     }
-                    if (sc != SDL_SCANCODE_UNKNOWN)
+                    /* no key-down for a space: in 1.23b Space opens the chat line, dropping what was typed */
+                    if (sc != SDL_SCANCODE_UNKNOWN && *p != ' ')
                         push_key(id, sc);
                     SDL_Event t;
                     memset(&t, 0, sizeof t);
@@ -1095,6 +1097,8 @@ static int watch_fault(void* addr, void* ctx)
 }
 
 int main(int argc, char** argv);
+static void fatal_report(const Guest* g) { xcl_report(2, g); }
+
 static void on_crash(int sig, siginfo_t* si, void* ctx)
 {
     if (watch_fault(si->si_addr, ctx))
@@ -1148,6 +1152,8 @@ static void on_crash(int sig, siginfo_t* si, void* ctx)
     void* frames[40];
     int k = backtrace(frames, 40);
     backtrace_symbols_fd(frames, k, 2);
+    /* who freed what the registers point into, and the last packets (xiv_crashlog.c) */
+    xcl_report(2, t ? &t->g : NULL);
     _exit(128 + sig);
 }
 
@@ -1159,6 +1165,7 @@ int main(int argc, char** argv)
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGBUS, &sa, NULL);
     sigaction(SIGSEGV, &sa, NULL);
+    rt_set_fatal_report(fatal_report);
     setvbuf(stdout, NULL, _IOLBF, 0);
     g_main_thread = pthread_self();
     signal(SIGUSR2, on_stack_request);
