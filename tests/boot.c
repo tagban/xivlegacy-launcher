@@ -465,6 +465,7 @@ static void profiler_thread(void* arg)
 }
 
 static void find_floats(const float v[3], float tol, uint32_t from);
+static void find_u32(uint32_t lo, uint32_t hi);
 static void find_nans(void);
 
 /* XIVLEGACY_NANWATCH=<hex guest address>: log when the float there turns NaN (and back); with
@@ -797,6 +798,14 @@ static void control_thread(void* arg)
                 if (sscanf(line + 6, "%f %f %f %f %x", &v[0], &v[1], &v[2], &tol, &from) >= 3)
                     find_floats(v, tol, from);
             }
+            else if (!strncmp(line, "findu ", 6))
+            {
+                /* findu <hex lo> [hex hi]: guest addresses holding a u32 in lo..hi (pointers into an object) */
+                unsigned lo = 0, hi = 0;
+                int k = sscanf(line + 6, "%x %x", &lo, &hi);
+                if (k >= 1)
+                    find_u32(lo, k >= 2 ? hi : lo);
+            }
             else if (!strncmp(line, "dumpf ", 6))
             {
                 /* dumpf <hex guest address> <count>: floats (and their bits) from guest memory */
@@ -814,6 +823,24 @@ static void control_thread(void* arg)
                         }
                         printf("\n");
                     }
+            }
+            else if (!strncmp(line, "pokef ", 6))
+            {
+                /* pokef <hex guest address> <float>...: write floats into guest memory (finding what moves an actor) */
+                unsigned a = 0;
+                int used = 0;
+                if (sscanf(line + 6, "%x%n", &a, &used) == 1)
+                {
+                    const char* q = line + 6 + used;
+                    float fv;
+                    int k = 0, adv = 0;
+                    while (k < 16 && sscanf(q, "%f%n", &fv, &adv) == 1)
+                    {
+                        memcpy(GUEST_PTR(a + (uint32_t)k * 4), &fv, 4);
+                        q += adv, ++k;
+                    }
+                    printf("[pokef] %08x: %d floats\n", a, k);
+                }
             }
             else if (!strncmp(line, "gfxdbg ", 7))
                 g9_debug(atoi(line + 7)); /* 0 normal, 1 wireframe, 2 gray textures */
@@ -899,6 +926,17 @@ static void find_floats(const float v[3], float tol, uint32_t from)
             break;
         if (a >= end)
             break;
+        /* the region holding `from` starts before it: scan from `from` on (paging through hits) */
+        mach_vm_address_t lo = (mach_vm_address_t)(uintptr_t)GUEST_PTR(from);
+        if (a < lo)
+        {
+            if (a + size <= lo)
+            {
+                a += size;
+                continue;
+            }
+            size -= lo - a, a = lo;
+        }
         if (info.protection & VM_PROT_READ)
         {
             const float* f = (const float*)(uintptr_t)a;
@@ -915,6 +953,36 @@ static void find_floats(const float v[3], float tol, uint32_t from)
         a += size;
     }
     printf("[findf] %d hits\n", hits);
+}
+
+static void find_u32(uint32_t lo, uint32_t hi)
+{
+    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0x10000), end = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0) + 0x100000000ull;
+    int hits = 0;
+    while (a < end && hits < 64)
+    {
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj;
+        if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS)
+            break;
+        if (a >= end)
+            break;
+        if (info.protection & VM_PROT_READ)
+        {
+            const uint32_t* w = (const uint32_t*)(uintptr_t)a;
+            size_t n = (size_t)((a + size > end ? end - a : size) / 4);
+            for (size_t i = 0; i < n && hits < 64; ++i)
+                if (w[i] >= lo && w[i] <= hi)
+                {
+                    printf("[findu] %08x: %08x\n", (uint32_t)((uintptr_t)&w[i] - (uintptr_t)GUEST_PTR(0)), w[i]);
+                    hits++;
+                }
+        }
+        a += size;
+    }
+    printf("[findu] %d hits\n", hits);
 }
 
 /* three NaNs in a row with numbers on both sides: a vector that went bad, not uninitialized memory */
