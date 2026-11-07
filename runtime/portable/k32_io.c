@@ -12,6 +12,7 @@
 #include "plat.h"
 #include "thunk.h"
 #include "vfs.h"
+#include "xiv_ctimer.h"
 #include "xiv_logtabs.h"
 #include "xiv_notice.h"
 
@@ -204,6 +205,12 @@ static void sh_CreateFileA(Guest* g)
     {
         trace_miss("CreateFileA", ARGS(0));
         RET(INVALID_HANDLE, 7);
+    }
+    if (!(access & GENERIC_WRITE))
+    {
+        char alt[1400];
+        if (xiv_ctimer_redirect(ARGS(0), host, alt, sizeof alt))
+            memcpy(host, alt, sizeof host);
     }
     PlatStat st;
     int existed = plat_stat(host, &st);
