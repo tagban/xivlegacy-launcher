@@ -183,7 +183,10 @@ static void sh_HeapDestroy(Guest* g) { RET(1, 1); }
 static void sh_HeapAlloc(Guest* g)
 {
     xcl_note_alloc(g->esp);
-    RET(gheap_alloc(ARG(2), (ARG(1) & HEAP_ZERO_MEMORY) != 0), 3);
+    xcl_cast_check(g);
+    uint32_t p = gheap_alloc(ARG(2), (ARG(1) & HEAP_ZERO_MEMORY) != 0);
+    xcl_note_got(p);
+    RET(p, 3);
 }
 static void sh_HeapFree(Guest* g)
 {
@@ -198,7 +201,9 @@ static void sh_HeapCompact(Guest* g) { RET(0, 2); }
 static void sh_HeapReAlloc(Guest* g)
 {
     uint32_t flags = ARG(1);
-    RET(gheap_realloc(ARG(2), ARG(3), (flags & HEAP_ZERO_MEMORY) != 0, (flags & HEAP_REALLOC_IN_PLACE_ONLY) != 0), 4);
+    uint32_t p = gheap_realloc(ARG(2), ARG(3), (flags & HEAP_ZERO_MEMORY) != 0, (flags & HEAP_REALLOC_IN_PLACE_ONLY) != 0);
+    xcl_note_got(p);
+    RET(p, 4);
 }
 
 #define MEM_COMMIT 0x1000u
@@ -331,6 +336,7 @@ static void sh_DeleteCriticalSection(Guest* g) { RET(0, 1); }
 static void sh_EnterCriticalSection(Guest* g)
 {
     xcl_note_cs(g->esp); /* the game allocator's frees, for the deferred actor delete (xiv_crashlog.c) */
+    xcl_cast_check(g);
     uint32_t cs = ARG(0), tid = gt_self()->tid;
     while (!cs_try(cs, tid))
     {
@@ -348,6 +354,7 @@ static void sh_TryEnterCriticalSection(Guest* g) { RET(cs_try(ARG(0), gt_self()-
 
 static void sh_LeaveCriticalSection(Guest* g)
 {
+    xcl_note_leave_cs(g->esp, g->esi); /* the game allocator's allocations (xiv_crashlog.c) */
     uint32_t cs = ARG(0), n = rd32(cs + 8);
     if (n > 1)
         wr32(cs + 8, n - 1);

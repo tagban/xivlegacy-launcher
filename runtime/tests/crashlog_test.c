@@ -12,6 +12,8 @@
 unsigned char* rt_guest_base;
 int gwin_is_committed(uint32_t addr) { return addr >= 0x10000u && addr < 0x10000000u; }
 uint64_t plat_wall_ms(void) { return 0; }
+void rt_call_indirect(Guest* g, uint32_t target) { (void)g, (void)target; }
+void rt_log(const char* fmt, ...) { (void)fmt; }
 
 #define TEXT_LO 0x00401000u
 #define TEXT_HI 0x00E00000u
@@ -32,6 +34,15 @@ int main(void)
     xcl_set_image(TEXT_LO, TEXT_HI, RDATA_LO, RDATA_HI);
     put(0x007D2DD5u, DRAIN_CODE, sizeof DRAIN_CODE);
     put(0x0040DF80u, FREE_CODE, sizeof FREE_CODE);
+    static const uint8_t RES1[] = { 0x8D, 0x4C, 0x24, 0x2C, 0xE8, 0x50, 0xBB, 0xD0, 0xFF };
+    static const uint8_t RES2[] = { 0x8D, 0x4C, 0x24, 0x1C, 0xE8, 0x2E, 0xBB, 0xD0, 0xFF };
+    put(0x007D2CB0u - 9, RES1, sizeof RES1);
+    put(0x007D2CD2u - 9, RES2, sizeof RES2);
+
+    /* the two actor type names, as the image has them */
+    static const char RAPTURE[] = ".?AVRaptureActor@Scene@Application@@", CHARA[] = ".?AVCharaActor@Chara@Actor@Scene@Application@@";
+    put(0x012B77E8u, (const uint8_t*)RAPTURE, sizeof RAPTURE);
+    put(0x012B7818u, (const uint8_t*)CHARA, sizeof CHARA);
 
     /* two actors with a vtable in .rdata whose first slot is in .text */
     const uint32_t A = 0x02000000u, B = 0x02001000u, VT = 0x00F00100u;
@@ -73,6 +84,72 @@ int main(void)
     wr32(esp, 0x00412345u), wr32(esp + 0x18, A);
     xcl_note_cs(esp);
     assert(rd32(v1) == A);
+
+    /* the queue as the drain starts (its reserve's allocation): live actors stay, even one at an
+     * address freed before (the allocators aren't all seen, so it may be live again); one queued
+     * twice, one back in its world's list and a non-object go */
+    {
+        const uint32_t C = 0x02002000u, D = 0x02003000u, Z = 0x02004000u, W = 0x02005000u;
+        wr32(C, VT), wr32(D, VT), wr32(Z, 0x3F000000u);
+        wr32(A + 0x118, 0), wr32(C + 0x118, 0), wr32(D + 0x118, W);
+        /* D's world: actor manager at +0xA4, its list's head node at +0x14; one node holding D */
+        const uint32_t head = 0x02006000u, node = 0x02006100u;
+        wr32(W + 0xA4 + 0x14, head), wr32(head, node), wr32(head + 4, node), wr32(node, head), wr32(node + 4, head),
+            wr32(node + 8, D);
+        xcl_note_free(C, 4, idle);
+        wr32(gb, A), wr32(gb + 4, C), wr32(gb + 8, A), wr32(gb + 12, D), wr32(gb + 16, Z);
+        wr32(VEC + 8, gb + 20);
+        const uint32_t rs = 0x04100000u;
+        wr32(rs + 0x40, 0x007D2CD2u);
+        xcl_note_alloc(rs);
+        assert(rd32(VEC + 8) == gb + 8 && rd32(gb) == A && rd32(gb + 4) == C && "A and C are left to delete");
+        /* no drain on the stack: untouched */
+        wr32(gb + 8, D), wr32(VEC + 8, gb + 12);
+        xcl_note_alloc(idle);
+        assert(rd32(VEC + 8) == gb + 12);
+        wr32(VEC + 8, gb);
+
+        /* during the drain, a batch entry whose memory turned into something else is dropped */
+        wr32(v1, A), wr32(v1 + 4, Z), wr32(E + 0x30, v1 + 8), wr32(v2, D);
+        wr32(esp, 0x0040DF87u), wr32(esp + 0x18, B);
+        xcl_note_cs(esp);
+        assert(rd32(v1) == A && rd32(v1 + 4) == 0 && rd32(v2) == D);
+        wr32(E + 0x30, v1 + 4);
+    }
+
+    /* a CharaActor whose effect controller is gone: the field is cleared before the drain uses it */
+    {
+        /* RTTI: vtable[-1] -> locator (type descriptor at +0xC, hierarchy at +0x10) */
+        const uint32_t VTC = 0x00F00200u, COL = 0x00F00300u, H = 0x00F00340u, ARR = 0x00F00360u, BCD = 0x00F00380u,
+                       TD_OTHER = 0x00F00400u;
+        wr32(VTC - 4, COL), wr32(VTC, 0x00500000u), wr32(COL + 0xC, TD_OTHER), wr32(COL + 0x10, H);
+        wr32(H + 8, 1), wr32(H + 0xC, ARR), wr32(ARR, BCD), wr32(BCD, 0x012B7810u);
+        const uint32_t P = 0x02007000u, Q = 0x02009000u, CT = 0x0200B000u;
+        wr32(P, VTC), wr32(P + 0x12F0, CT), wr32(CT, 0x0000003Au); /* controller memory reused */
+        wr32(Q, VT), wr32(Q + 0x12F0, CT);                           /* not a CharaActor: untouched */
+        wr32(P + 0x118, 0), wr32(Q + 0x118, 0);
+        wr32(gb, P), wr32(gb + 4, Q), wr32(VEC + 8, gb + 8);
+        xcl_note_alloc(0x04100000u);
+        assert(rd32(VEC + 8) == gb + 4 && rd32(gb) == Q && "P, destroyed already, is not deleted again");
+        assert(rd32(Q + 0x12F0) == CT);
+        /* a live CharaActor's controller freed during the drain: the field is cleared, the actor stays */
+        wr32(VEC + 8, gb); /* the drain has taken the queue */
+        wr32(CT, VT), wr32(P + 0x12F0, CT), wr32(v1, P), wr32(E + 0x30, v1 + 4);
+        wr32(esp, 0x00412345u);
+        xcl_note_free(CT, 0x58, esp);
+        assert(rd32(P + 0x12F0) == 0 && rd32(v1) == P);
+        /* one whose controller is garbage during the drain is dropped from the batch */
+        wr32(P + 0x12F0, CT), wr32(CT, 0x0E8A798Cu);
+        xcl_note_free(0x0200C000u, 0x10, esp);
+        assert(rd32(v1) == 0);
+        wr32(VEC + 8, gb);
+    }
+
+    /* a blanked type name (any RaptureActor would cast to CharaActor) is put back; the spare word is left */
+    wr32(0x012B7814u, 0x41E317C3u), wr32(0x012B7818u, 0), wr32(0x012B77E8u, 0);
+    xcl_note_cs(idle);
+    assert(!memcmp(GUEST_PTR(0x012B7818u), CHARA, sizeof CHARA) && !memcmp(GUEST_PTR(0x012B77E8u), RAPTURE, sizeof RAPTURE));
+    assert(rd32(0x012B7814u) == 0x41E317C3u);
 
     /* packets: one 1.0 base packet with two subpackets, split across reads; then the report */
     uint8_t pk[16 + 0x30 + 0x28];

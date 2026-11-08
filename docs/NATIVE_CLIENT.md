@@ -70,7 +70,8 @@ button is No.
 | `XIVLEGACY_LONGCALLS=<ms>` | each import call that took at least that long, with its thread and call site (what the game waits in when it looks idle) |
 | `XIVLEGACY_FILES_TRACE=1` | every file the game opens, with its handle |
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |
-| `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too; without it only an actor freed before its turn is logged |
+| `XIVLEGACY_CASTCHECK=1` | as each drain starts, the game's own `dynamic_cast<CharaActor>` of every queued actor compared with its RTTI (`[actors] dynamic_cast...` on a mismatch) |
+| `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 
@@ -106,11 +107,30 @@ button is No.
   the guest memory references in the translation are stack traffic (push/pop, [esp+d]). Fewer
   instructions alone (folded addresses, ThinLTO) did not change the frame rate.
 - Actors are deleted a frame late: the world's remove-actor pushes them onto a vector (0x134DFA0)
-  that 0x7D2C40 drains in two batches. Destroying one actor can free another still waiting in the
-  second batch, and the next pass called through it (the FATAL in 0x65DD20 / 0x65DD40 / 0x7D27A0).
-  The game frees through its own allocator (0x40DF70, which enters a critical section first), not
-  HeapFree; the runtime watches that and drops freed actors from the batch (`xiv_crashlog.c`).
-  A FATAL or crash also logs who freed what the registers point into, and the last game packets.
+  that 0x7D2C40 drains in two batches through 0x7D27A0 (pass 1: `dynamic_cast<CharaActor>` and
+  0x65DD20, which calls through the RaptureSchEffectController at +0x12F0; pass 2: 0x65DD40; pass
+  3: delete). The common crash there (FATAL / SIGBUS reported in 0x65DD20, 0x65DD40 or
+  "f_007d27a0 + 872", the return address of the pass-1 call) was a translation bug, not the game's:
+  the recompiler's saved-register pass (`save_slots`, crates/recomp) took the switch cases Ghidra
+  splits off 0x855790 for functions of their own, so a `push edi` there that is an argument
+  became a C local. 0x8553F0 then wrote its 4x4 matrix to whatever the stale stack slot held, the
+  address of RaptureActor's type descriptor, every frame: the matrix covers the type names of
+  RaptureActor and CharaActor. Whenever both names start with the same bytes, `__RTDynamicCast`
+  matches any RaptureActor (a BgPlateActor, a WindowActor) as a CharaActor, and passes 1 and 2
+  read and write CharaActor fields past the end of it. The pass now skips switch cases and pushes
+  of a register that isn't its incoming value (171 functions changed). The runtime checks those two
+  names on each critical section and logs and restores a change (`[actors] type name at ...`).
+- Separately, a CharaActor is sometimes queued for delete again after its destructor ran (the
+  block freed by 0x669E3C seconds before; cause not found yet). Its controller is gone by then, so
+  the drain drops it (`[actors] ... destroyed already, not deleted again`), and also takes
+  non-objects, duplicates and actors added back to their world's list out of the queue
+  (`xiv_crashlog.c`). The game frees most objects through its own allocator (0x40DF70, which
+  enters a critical section first), not HeapFree, and allocates through paths the runtime doesn't
+  all see: a table of freed blocks can't tell a dangling pointer from a reused address.
+- A FATAL or crash also logs who freed what the registers point into, the drain's batches and the
+  last game packets. Crash frames name the return address, not the faulting function: check which
+  call sits before "+ N" in the host disassembly. `watch <hex address> [bytes]` on the control fifo
+  logs each translated function that writes there.
 - The CRT's x87 math dispatch jumps through unaligned tables (`discovery/CrtDispatch.py`); the
   MSSMIXER section holds a CPU check outside `.text` (a native stand-in in `xiv_misc.c`).
 

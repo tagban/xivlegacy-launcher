@@ -1088,6 +1088,9 @@ static int watch_fault(void* addr, void* ctx)
             n += snprintf(line + n, sizeof line - (size_t)n, " < %s", dladdr((void*)ret, &di) && di.dli_sname ? di.dli_sname : "?");
             fp = ((uintptr_t*)fp)[0];
         }
+        GThread* wt = gt_holds() ? gt_self() : NULL;
+        n += snprintf(line + n, sizeof line - (size_t)n, " (guest esp %08x, gthread stack %08x-%08x, host thread %u)",
+            (uint32_t)(uc->uc_mcontext->__ss.__x[2] >> 32), wt ? wt->stack_lo : 0, wt ? wt->stack_hi : 0, plat_thread_id());
         line[n++] = '\n';
         write(1, line, (size_t)n);
     }
