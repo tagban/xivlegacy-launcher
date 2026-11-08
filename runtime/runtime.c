@@ -166,9 +166,11 @@ void* rt_longjmp_regs(Guest* g)
 
 static FILE* g_log;
 static RtFatalHook g_fatal_hook;
+static RtFatalReport g_fatal_report;
 
 void rt_set_log(FILE* f) { g_log = f; }
 void rt_set_fatal_hook(RtFatalHook h) { g_fatal_hook = h; }
+void rt_set_fatal_report(RtFatalReport r) { g_fatal_report = r; }
 
 void rt_log(const char* fmt, ...)
 {
@@ -195,6 +197,8 @@ void rt_fatal(Guest* g, uint32_t addr, const char* what)
     for (int i = 0; i < 24; ++i)
         rt_log(" %08x", rd32(g->esp + 4u * i));
     rt_log("\n");
+    if (g_fatal_report)
+        g_fatal_report(g);
     if (g_fatal_hook)
         g_fatal_hook(addr, what);
     abort();
