@@ -33,6 +33,7 @@ static void set_host(const XivHostFns* fns) { g_host = *fns; }
 
 extern GuestFn rt_hook_streamlog;
 extern GuestFn rt_hook_replace_lua_protected;
+extern GuestFn rt_hook_actor_lookup;
 
 XIV_EXPORT const XivGameModule xiv_game_module = {
     XIV_GAME_ABI,
@@ -48,6 +49,7 @@ XIV_EXPORT const XivGameModule xiv_game_module = {
     &rt_image_oep,
     &rt_hook_streamlog,
     &rt_hook_replace_lua_protected,
+    &rt_hook_actor_lookup,
     &rt_guest_base,
     &rt_reloc_delta,
     &rt_lock_contended,

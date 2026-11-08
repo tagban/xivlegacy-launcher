@@ -11,6 +11,7 @@
 #include "input.h"
 #include "k32.h"
 #include "pe.h"
+#include "xiv_crashlog.h"
 #include "plat.h"
 #include "runtime.h"
 #include "thunk.h"
@@ -547,14 +548,22 @@ void xiv_lua_throw(Guest* g, uint32_t code, uint32_t nargs, uint32_t args)
     longjmp(t_lua_catch->jb, 1);
 }
 
+#ifndef XIVLEGACY_SPLIT
+extern GuestFn rt_hook_actor_lookup __attribute__((weak));
+#endif
+
 static void lua_protected_install(void)
 {
 #ifdef XIVLEGACY_SPLIT
     if (xiv_game->hook_lua_protected)
         *xiv_game->hook_lua_protected = hook_lua_protected;
+    if (xiv_game->hook_actor_lookup)
+        *xiv_game->hook_actor_lookup = xcl_actor_lookup;
 #else
     if (&rt_hook_replace_lua_protected)
         rt_hook_replace_lua_protected = hook_lua_protected;
+    if (&rt_hook_actor_lookup)
+        rt_hook_actor_lookup = xcl_actor_lookup;
 #endif
 }
 
