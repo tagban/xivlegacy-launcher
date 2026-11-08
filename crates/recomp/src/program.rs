@@ -35,6 +35,9 @@ pub struct Program {
     pub relocs: HashSet<u64>,
     /// entries that sit inside another function's body
     pub inner: HashSet<u64>,
+    /// entries that are the cases of a switch (Ghidra splits some off as functions): entered by a
+    /// jump in the middle of the switch's frame, not with a return address on top
+    pub cases: HashSet<u64>,
     /// the entries that are the C library's _setjmp3, and its longjmp
     pub setjmps: HashSet<u64>,
     pub longjmps: HashSet<u64>,
@@ -123,7 +126,7 @@ impl Program {
         let text = (int(&text[0], "text")?, int(&text[1], "text")?);
         let mut p = Program {
             base, image: pe.memory_mapped_image(), prefix: prefix.to_string(), entries: functions.keys().copied().collect(),
-            functions, switches, hooks, relocs: HashSet::new(), inner: HashSet::new(), setjmps: HashSet::new(),
+            functions, switches, hooks, relocs: HashSet::new(), inner: HashSet::new(), cases: HashSet::new(), setjmps: HashSet::new(),
             longjmps: HashSet::new(), flags_out: None, flags_in: None, text, tables, boundaries: HashMap::new(),
         };
         p.relocs = p.text_relocations(pe)?;
@@ -133,6 +136,7 @@ impl Program {
         let more = p.add_branch_entries(&mut lite)?;
         p.inner.extend(more);
         p.boundaries.clear();
+        p.cases = p.switches.values().flatten().copied().filter(|t| p.entries.contains(t)).collect();
         let (setjmps, longjmps) = p.c_library_jumps();
         p.setjmps = setjmps;
         p.longjmps = longjmps;

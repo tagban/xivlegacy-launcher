@@ -409,7 +409,15 @@ impl<'a> FunctionTranslator<'a> {
     /// other write to esp; an exit (ret, a jump out of the function) is preceded by its pops, read
     /// backwards from the return address at depth 0. A function with an exception frame (fs:) or a
     /// setjmp call keeps every slot: an unwind lands in it with the stack as the slots left it.
+    /// Only a push of the register's incoming value is a save (not one written or pushed before it
+    /// in the prologue: that push is an argument), and only at a real entry: a switch case split
+    /// off as a function starts inside its switch's frame, so its pops before a ret are the
+    /// switch's saves, and a push there is a call's argument (0x85582f: the out pointer of
+    /// 0x8553F0, whose 4x4 matrix then went to a stale slot's address, RTTI type names in .data).
     fn save_slots(&mut self) {
+        if self.ctx.cases.contains(&self.entry) {
+            return;
+        }
         let insns = &self.insns;
         let idx: HashMap<u64, usize> = insns.iter().enumerate().map(|(k, i)| (i.address, k)).collect();
         let reg32 = |op: &Op| -> Option<&'static str> {
@@ -417,6 +425,18 @@ impl<'a> FunctionTranslator<'a> {
                 return None;
             }
             disasm::reg_name(op.reg).and_then(|n| R32.iter().find(|&&x| x == n).copied())
+        };
+        // ebx, esi or edi, by any part of it (bl, si, di...)
+        let saved_family = |op: &Op| -> Option<&'static str> {
+            if op.ty != OP_REG {
+                return None;
+            }
+            match disasm::reg_name(op.reg)? {
+                "ebx" | "bx" | "bl" | "bh" => Some("ebx"),
+                "esi" | "si" | "sil" => Some("esi"),
+                "edi" | "di" | "dil" => Some("edi"),
+                _ => None,
+            }
         };
         let esp_imm = |ins: &Insn| -> Option<i64> {
             // add/sub esp, imm: the change in depth
@@ -451,6 +471,7 @@ impl<'a> FunctionTranslator<'a> {
         // the prologue: pushes of callee-saved registers and the slot each went to (depth after it)
         let Some(&first) = idx.get(&self.entry) else { return };
         let mut pushed: HashMap<i64, (&'static str, u64)> = HashMap::new();
+        let mut dirty: HashSet<&'static str> = HashSet::new(); // no longer the incoming value, or pushed already
         let mut depth: i64 = 0;
         let mut k = first;
         loop {
@@ -463,8 +484,23 @@ impl<'a> FunctionTranslator<'a> {
                 let r = i.operands.first().and_then(reg32);
                 depth -= 4;
                 if let Some(r) = r.filter(|r| matches!(*r, "ebx" | "esi" | "edi")) {
-                    pushed.entry(depth).or_insert((r, i.address));
+                    if dirty.insert(r) {
+                        pushed.entry(depth).or_insert((r, i.address));
+                    }
                 }
+            }
+            // what this instruction may write: its first operand, both of an exchange, esi/edi of a string op
+            if !matches!(mn, "push" | "cmp" | "test") {
+                dirty.extend(i.operands.first().and_then(saved_family));
+            }
+            if matches!(mn, "xchg" | "xadd" | "cmpxchg") {
+                dirty.extend(i.operands.get(1).and_then(saved_family));
+            }
+            if ["movs", "stos", "lods", "cmps", "scas", "rep"].iter().any(|p| mn.starts_with(p)) {
+                dirty.extend(["esi", "edi"]);
+            }
+            if mn == "push" {
+                // the depth is counted above
             } else if let Some(d) = esp_imm(i) {
                 depth += d;
             } else if mn == "pop" || writes_esp(i) || mn == "call" || mn.starts_with('j') || mn.starts_with("ret")
