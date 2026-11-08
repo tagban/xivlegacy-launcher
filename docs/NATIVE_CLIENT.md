@@ -45,6 +45,12 @@ A session id comes from the server's web login (`POST /login` on :54993 answers 
 to `XIVLEGACY_LOBBY` (default 127.0.0.1). The game's Documents folder is `XIVLEGACY_USER` (default
 `./xiv-user`).
 
+A server that stops answering without closing the connection (the map server behind the world server
+dies, a link drops) counts as a lost connection after `XIVLEGACY_NET_TIMEOUT` seconds (default 45, 0 =
+never) of silence while the game keeps sending: the client closes it, and the game shows its own game
+server error box (code 30002) and returns to the character list, as it does when a server closes the
+connection.
+
 The title screen logs in to the lobby by itself; Start opens "A Word to Our Players", whose default
 button is No.
 
