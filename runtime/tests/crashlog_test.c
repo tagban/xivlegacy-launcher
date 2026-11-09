@@ -142,6 +142,24 @@ int main(void)
         wr32(P + 0x12F0, CT), wr32(CT, 0x0E8A798Cu);
         xcl_note_free(0x0200C000u, 0x10, esp);
         assert(rd32(v1) == 0);
+
+        /* the id lookup's hook: a CharaActor whose block runs into unmapped memory is not found;
+         * a whole one, another object, and NULL pass */
+        static const uint8_t LOOKUP[] = { 0x8D, 0x88, 0xA4, 0x00, 0x00, 0x00, 0xE8 };
+        put(0x00610D4Au, LOOKUP, sizeof LOOKUP);
+        const uint32_t TAIL = 0x0FFFF000u; /* its +0x1000 is past the fake's committed window */
+        wr32(TAIL, VTC);
+        Guest lg;
+        memset(&lg, 0, sizeof lg);
+        lg.esp = idle;
+        lg.eax = TAIL, xcl_actor_lookup(&lg);
+        assert(lg.eax == 0 && "a CharaActor cut off by unmapped memory is not found");
+        lg.eax = P, xcl_actor_lookup(&lg);
+        assert(lg.eax == P);
+        lg.eax = Q, xcl_actor_lookup(&lg);
+        assert(lg.eax == Q);
+        lg.eax = 0x0E8A798Cu, xcl_actor_lookup(&lg);
+        assert(lg.eax == 0 && "not an object");
         wr32(VEC + 8, gb);
     }
 

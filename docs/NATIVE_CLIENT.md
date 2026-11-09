@@ -29,7 +29,7 @@ rendering; performance is the work now.
 python3 tools/discover.py --game "<1.23b install>"            # once per build: meta/*.meta.json
 target/release/xivlegacy-recomp recomp --meta meta/ffxivgame.2012.09.19.0001.meta.json \
     --image generated/images/2012.09.19.0001/ffxivgame.exe --retail generated/images/2012.09.19.0001/ffxivgame.exe \
-    --out generated/c --all --patches meta/ffxivgame.2012.09.19.0001.patches.json --hooks streamlog=0x4e7290,replace_lua_protected=0xdcf140
+    --out generated/c --all --patches meta/ffxivgame.2012.09.19.0001.patches.json --hooks streamlog=0x4e7290,replace_lua_protected=0xdcf140,actor_lookup=0x610d55
 python3 tools/build.py boot
 build/boot "<1.23b install>" <56-character session id>
 ```
@@ -133,6 +133,17 @@ button is No.
   (`xiv_crashlog.c`). The game frees most objects through its own allocator (0x40DF70, which
   enters a critical section first), not HeapFree, and allocates through paths the runtime doesn't
   all see: a table of freed blocks can't tell a dangling pointer from a reused address.
+- Actors are also found by id: the world (a RaptureActorContainer, actor+0x118) keeps a
+  `std::map<id, Actor*>` in its actor manager (world+0xA8; 0x7D2A50 finds in it). 0x610D30 looks
+  up the id at +0x134 of the world's +0x70 object there for the per-frame updater 0x7F1BD0. Once
+  (Platinum Mirage, about two minutes after a same-zone warp, Tab-targeting and walking) that found
+  an actor whose memory was already given back: SIGBUS in 0x663CE0, reading +0x1350 of it. Not
+  reproduced in about 100 warps since, so the stale entry's source is unknown. The recompiler's
+  hook at 0x610D55 (`--hooks actor_lookup=0x610d55`, module ABI 5) has the runtime check what the
+  lookup found: not an object, or a CharaActor whose block isn't all mapped, comes back as not
+  found, which the updater skips (`[actors] id lookup found ...`). An actor freed while still in
+  that map is logged with the stack that frees it (`[actors] ... freed while still in its world's
+  id map`).
 - A FATAL or crash also logs who freed what the registers point into, the drain's batches and the
   last game packets. Crash frames name the return address, not the faulting function: check which
   call sits before "+ N" in the host disassembly. `watch <hex address> [bytes]` on the control fifo

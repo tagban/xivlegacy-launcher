@@ -37,6 +37,9 @@ void xcl_note_got(uint32_t p);
 
 /* After the notes above, with the guest: XIVLEGACY_CASTCHECK=1 diagnostics as a drain starts. */
 void xcl_cast_check(Guest* g);
+/* The recompiler's hook after the actor lookup by id in 0x610D30 (--hooks actor_lookup=0x610d55):
+ * an actor that is no longer one, or whose memory is gone, comes back as not found. */
+void xcl_actor_lookup(Guest* g);
 
 /* LeaveCriticalSection by the game: notes the game allocator's own allocations. */
 void xcl_note_leave_cs(uint32_t esp, uint32_t esi);

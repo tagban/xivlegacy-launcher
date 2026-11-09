@@ -47,6 +47,7 @@ static int is_return(uint32_t r)
 static void defer_freed(uint32_t p, uint32_t size, uint32_t esp);
 static void defer_filter(uint32_t esp);
 static const char* class_of(uint32_t vtbl, char* buf, size_t cap);
+static void id_map_check(uint32_t p, uint32_t size, uint32_t esp);
 
 /* --- frees ------------------------------------------------------------------------------------- */
 
@@ -104,6 +105,7 @@ void xcl_note_free(uint32_t p, uint32_t size, uint32_t esp)
     uint32_t vtbl = rd32(p);
     if (!in_rdata(vtbl) || !in_text(rd32(vtbl)))
         return;
+    id_map_check(p, size, esp);
     FreeRec* r = &g_frees[g_free_n++ % FREES];
     r->p = p, r->size = size, r->vtbl = vtbl, r->ms = (uint32_t)plat_wall_ms();
     int k = 0;
@@ -365,6 +367,130 @@ static int is_chara(uint32_t a)
             return 1;
     }
     return 0;
+}
+
+/* The world's actor manager (world+0xA4) also keeps a std::map<id, Actor*> at +4 (0x7D2A50 finds
+ * in it: map +4 head; node: left, parent, right, key +0xC, actor +0x10, isnil +0x15). Lookups by id
+ * (0x610D30, for the updater 0x7F1BD0) hand out whatever it holds, so an actor freed while still in
+ * it is a use after free waiting to happen (SIGBUS in 0x663CE0 under 0x7F1BD0). Returns the node. */
+static uint32_t g_last_world;
+
+static uint32_t id_map_node(uint32_t w, uint32_t actor)
+{
+    uint32_t map = w + 0xA4 + 4;
+    if (!readable(map + 8))
+        return 0;
+    uint32_t head = rd32(map + 4), size = rd32(map + 8);
+    if (!readable(head + 0x14) || !(rd32(head + 0x14) >> 8 & 0xFF) || size > 100000)
+        return 0;
+    uint32_t stack[96], n = 0, seen = 0, root = rd32(head + 4);
+    if (root != head)
+        stack[n++] = root;
+    while (n && seen++ <= size)
+    {
+        uint32_t x = stack[--n];
+        if (!readable(x + 0x14) || (rd32(x + 0x14) >> 8 & 0xFF))
+            continue;
+        if (rd32(x + 0x10) == actor)
+            return x;
+        uint32_t l = rd32(x), r = rd32(x + 8);
+        if (l != head && n < 96)
+            stack[n++] = l;
+        if (r != head && n < 96)
+            stack[n++] = r;
+    }
+    return 0;
+}
+
+static uint32_t g_map_logged;
+
+/* A RaptureActorContainer with a sane id map? */
+static int world_ok(uint32_t w)
+{
+    if (!is_object(w) || !readable(w + 0xA4 + 12) || rd32(w + 0xA4 + 12) > 20000)
+        return 0;
+    uint32_t head = rd32(w + 0xA4 + 8);
+    if (!readable(head + 0x14) || (rd32(head + 0x14) >> 8 & 0xFF) != 1)
+        return 0;
+    uint32_t root = rd32(head + 4);
+    if (root == head ? rd32(w + 0xA4 + 12) != 0 : !readable(root + 0x14) || rd32(root + 4) != head)
+        return 0;
+    static uint32_t good_vt; /* the container's class, by name the first time */
+    if (good_vt)
+        return rd32(w) == good_vt;
+    char cls[96];
+    if (!strstr(class_of(rd32(w), cls, sizeof cls), "RaptureActorContainer@"))
+        return 0;
+    good_vt = rd32(w);
+    return 1;
+}
+
+/* An actor being freed: is it still in its world's id map? Log it with the stack that frees it. */
+static void id_map_check(uint32_t p, uint32_t size, uint32_t esp)
+{
+    /* The game allocator's frees come with no size (4): go by the world pointer at +0x118, which a
+     * destroyed actor still has. A known size is a big enough block: try the last world seen. */
+    uint32_t w = readable(p + 0x118) ? rd32(p + 0x118) : 0;
+    if (world_ok(w))
+    {
+        if (w != g_last_world)
+        {
+            char cls[96], line[192];
+            snprintf(line, sizeof line, "[actors] world %08x (%s): %u actors in its id map\n", w, class_of(rd32(w), cls, sizeof cls),
+                rd32(w + 0xA4 + 12));
+            (void)!write(2, line, strlen(line));
+        }
+        g_last_world = w;
+    }
+    else if (size < 0x200 || !world_ok(w = g_last_world))
+        return;
+    uint32_t node = id_map_node(w, p);
+    if (!node)
+        return;
+    if (++g_map_logged <= 64)
+    {
+        char cls[96], line[256];
+        snprintf(line, sizeof line, "[actors] %08x (%s) freed while still in its world's id map (id %08x, world %08x),", p,
+            class_of(rd32(p), cls, sizeof cls), rd32(node + 0xC), w);
+        (void)!write(2, line, strlen(line));
+        log_rets(esp);
+    }
+}
+
+/* 0x610D30 finds an actor by id in its world's id map: the world's +0x70 object, the id at its
+ * +0x134 (the updater 0x7F1BD0 calls it each frame and copes with NULL). Once that found a freed
+ * actor whose memory was already given back (SIGBUS in 0x663CE0 at +0x1350, about two minutes after a
+ * same-zone warp). The recompiler's hook at 0x610D55 (test eax, eax, right after the find) checks what it
+ * found: not an object, or a CharaActor whose block isn't all mapped, is not found. */
+static const uint8_t LOOKUP_CODE[] = { 0x8D, 0x88, 0xA4, 0x00, 0x00, 0x00, 0xE8 }; /* 0x610D4A: lea ecx, [eax + 0xa4]; call */
+
+void xcl_actor_lookup(Guest* g)
+{
+    static int code = -1;
+    static uint32_t logged;
+    if (code < 0)
+    {
+        code = g_rdata_hi && in_text(0x610D4Au);
+        for (uint32_t i = 0; code && i < sizeof LOOKUP_CODE; ++i)
+            code = rd8(0x610D4Au + i) == LOOKUP_CODE[i];
+        const char* m = code ? "[actors] id lookup check on\n" : "[actors] id lookup check off: not the 1.23b code\n";
+        (void)!write(2, m, strlen(m));
+    }
+    uint32_t a = g->eax;
+    if (!code || !a)
+        return;
+    int ok = is_object(a) && (!is_chara(a) || (gwin_is_committed(a + 0x1000) && gwin_is_committed(a + CHARA_EFFECT + 0x100)));
+    if (ok)
+        return;
+    if (++logged <= 32)
+    {
+        char line[200];
+        snprintf(line, sizeof line, "[actors] id lookup found %08x (word %08x), which is not a live actor: not found,", a,
+            readable(a) ? rd32(a) : 0);
+        (void)!write(2, line, strlen(line));
+        log_rets(g->esp);
+    }
+    g->eax = 0;
 }
 
 static const FreeRec* free_rec(uint32_t a)
