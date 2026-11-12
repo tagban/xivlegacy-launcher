@@ -140,8 +140,12 @@ button is No.
   an actor whose memory was already given back: SIGBUS in 0x663CE0, reading +0x1350 of it. Not
   reproduced in about 100 warps since, so the stale entry's source is unknown. The recompiler's
   hook at 0x610D55 (`--hooks actor_lookup=0x610d55`, module ABI 5) has the runtime check what the
-  lookup found: not an object, or a CharaActor whose block isn't all mapped, comes back as not
-  found, which the updater skips (`[actors] id lookup found ...`). An actor freed while still in
+  lookup found: anything but a whole, live CharaActor comes back as not found, which the updater
+  skips (`[actors] id lookup for <id> found <addr> (<class>) ...`). All nine callers of 0x610D30
+  are camera contexts that read the result as a CharaActor. On 2026-11-12 the lookup returned a
+  live BgObjActor after `!goto 1001424` across Ul'dah: the screen went black (camera locked on it),
+  then the same SIGBUS at +0x1350. The id looked up was 0xC0000000, the game's "no actor" id, which
+  the map also holds for local actors with no server id (WeaponActor, BgObjActor). An actor freed while still in
   that map is logged with the stack that frees it (`[actors] ... freed while still in its world's
   id map`).
 - A FATAL or crash also logs who freed what the registers point into, the drain's batches and the
