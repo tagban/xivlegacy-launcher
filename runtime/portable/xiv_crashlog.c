@@ -458,10 +458,14 @@ static void id_map_check(uint32_t p, uint32_t size, uint32_t esp)
 }
 
 /* 0x610D30 finds an actor by id in its world's id map: the world's +0x70 object, the id at its
- * +0x134 (the updater 0x7F1BD0 calls it each frame and copes with NULL). Once that found a freed
- * actor whose memory was already given back (SIGBUS in 0x663CE0 at +0x1350, about two minutes after a
- * same-zone warp). The recompiler's hook at 0x610D55 (test eax, eax, right after the find) checks what it
- * found: not an object, or a CharaActor whose block isn't all mapped, is not found. */
+ * +0x134. Its only callers are the camera contexts (0x7F1BD0 ... 0x7F7BA0, e.g. the third-person lock
+ * camera CameraActorContextTPS_Lock), which call it each frame, cope with NULL, and treat what it finds
+ * as a CharaActor: 0x663CE0 reads +0x1350 of it. In Ul'dah the id once found a BgObjActor (a live
+ * object, far smaller): SIGBUS at +0x1350, after a same-zone !warp in the Platinum Mirage and after a
+ * !goto to Gegeissa, whose frames before the crash were black (the camera aimed from that object).
+ * The id was 0xC0000000, the game's "no actor" id (what a warp leaves as the lock target), under which
+ * the map also holds local actors without a server id (WeaponActor, BgObjActor). The recompiler's hook at 0x610D55 (test eax, eax, right after the find) checks what it found:
+ * anything but a whole, live CharaActor is not found. */
 static const uint8_t LOOKUP_CODE[] = { 0x8D, 0x88, 0xA4, 0x00, 0x00, 0x00, 0xE8 }; /* 0x610D4A: lea ecx, [eax + 0xa4]; call */
 
 void xcl_actor_lookup(Guest* g)
@@ -479,14 +483,15 @@ void xcl_actor_lookup(Guest* g)
     uint32_t a = g->eax;
     if (!code || !a)
         return;
-    int ok = is_object(a) && (!is_chara(a) || (gwin_is_committed(a + 0x1000) && gwin_is_committed(a + CHARA_EFFECT + 0x100)));
-    if (ok)
+    int obj = is_object(a), chara = obj && is_chara(a);
+    if (chara && gwin_is_committed(a + 0x1000) && gwin_is_committed(a + CHARA_EFFECT + 0x100))
         return;
     if (++logged <= 32)
     {
-        char line[200];
-        snprintf(line, sizeof line, "[actors] id lookup found %08x (word %08x), which is not a live actor: not found,", a,
-            readable(a) ? rd32(a) : 0);
+        /* 0x7D2A50 pops its one argument (ret 4), the id, which is left just below esp. */
+        char cls[96], line[256];
+        snprintf(line, sizeof line, "[actors] id lookup for %08x found %08x (%s), which is not a live CharaActor: not found,",
+            rd32(g->esp - 4), a, obj ? class_of(rd32(a), cls, sizeof cls) : readable(a) ? "not an object" : "unmapped");
         (void)!write(2, line, strlen(line));
         log_rets(g->esp);
     }
