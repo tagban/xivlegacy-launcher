@@ -35,6 +35,11 @@
       "va": "0x004C5864",
       "bytes": "6A00",
       "why": "the character setting vulgar (the profanity filter) defaults to 0, off, in place of 1: push 0 as the default ahead of max 1 and min 0"
+    },
+    {
+      "va": "0x00B656B1",
+      "bytes": "D90578DE0A01D85C240CDFE0F6C4017408C744240C0000803E90909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090",
+      "why": "the sound engine's FilterBase::CalculateLowPassCoefficients (0xB656B0) asserts freq <= 0.25 (a share of the sample rate) and the assert handler then writes to address 0 on purpose, so the whole client dies. Zoning out right after killing monsters can hand it a cutoff above 0.25 or NaN (seen going 157 -> 155 and 172 -> 209 after !kill). Clamp freq to 0.25 in place (fld 0.25; fcomp [esp+0xc]; fnstsw ax; test ah,1 also catches NaN; je over mov dword [esp+0xc], 0x3E800000) and NOP the rest of the assert call, so the filter is computed at its highest cutoff in place of crashing."
     }
   ]
 }
