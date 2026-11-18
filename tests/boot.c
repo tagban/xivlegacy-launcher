@@ -25,6 +25,7 @@
 #include "gthread.h"
 #include "d3d9.h"
 #include "gwin.h"
+#include "input.h"
 #include "k32.h"
 #include "pe.h"
 #include "plat.h"
@@ -605,13 +606,98 @@ static SDL_WindowID game_window(void)
     return id;
 }
 
+/* A scripted gamepad for the control FIFO's pad command. XIVLEGACY_VPAD=1 attaches an SDL virtual
+ * gamepad at start, so the game finds a controller (it only takes the ones present when it starts);
+ * the pad command then sets what the game reads from it (XInputGetState, through input_test_xpad):
+ * SDL does not hand a virtual pad's values to the gamepad layer here. */
+static int g_vpad;
+static XPad g_vpad_state;
+static void vpad_attach(void)
+{
+    SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    SDL_VirtualJoystickDesc d;
+    SDL_INIT_INTERFACE(&d);
+    d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    d.name = "XIVLegacy virtual pad";
+    g_vpad = SDL_AttachVirtualJoystick(&d) != 0;
+    if (g_vpad)
+        input_test_xpad(&g_vpad_state);
+    printf("[boot] vpad: %s\n", g_vpad ? "attached" : SDL_GetError());
+}
+static void vpad_set(const char* name, int v, int ms)
+{
+    /* XInput: sticks -32768..32767 with y up, triggers 0..255, buttons as XINPUT_GAMEPAD_* bits */
+    static const struct { const char* name; uint16_t bit; } BUTTONS[] = {
+        { "dpup", 0x0001 }, { "dpdown", 0x0002 }, { "dpleft", 0x0004 }, { "dpright", 0x0008 }, { "start", 0x0010 },
+        { "back", 0x0020 }, { "l3", 0x0040 }, { "r3", 0x0080 }, { "lb", 0x0100 }, { "rb", 0x0200 }, { "a", 0x1000 },
+        { "b", 0x2000 }, { "x", 0x4000 }, { "y", 0x8000 },
+    };
+    if (!g_vpad)
+        return;
+    XPad* x = &g_vpad_state;
+    int16_t* stick = !strcmp(name, "lx") ? &x->lx : !strcmp(name, "ly") ? &x->ly : !strcmp(name, "rx") ? &x->rx
+                   : !strcmp(name, "ry") ? &x->ry : NULL;
+    uint8_t* trigger = !strcmp(name, "lt") ? &x->lt : !strcmp(name, "rt") ? &x->rt : NULL;
+    uint16_t bit = 0;
+    for (size_t i = 0; i < sizeof BUTTONS / sizeof *BUTTONS; ++i)
+        if (!strcmp(name, BUTTONS[i].name))
+            bit = BUTTONS[i].bit;
+    if (!stick && !trigger && !bit)
+        return;
+    for (int pass = 0; pass < (ms > 0 ? 2 : 1); ++pass)
+    {
+        int val = pass ? 0 : v;
+        if (stick)
+            *stick = (int16_t)(val < -32768 ? -32768 : val > 32767 ? 32767 : val);
+        else if (trigger)
+            *trigger = (uint8_t)(val < 0 ? 0 : val > 255 ? 255 : val);
+        else
+            x->buttons = (uint16_t)(val ? x->buttons | bit : x->buttons & ~bit);
+        input_test_xpad(x);
+        if (!pass && ms > 0)
+            plat_sleep_ms((uint32_t)ms);
+    }
+}
+
+/* lag <hold ms> <period ms> <seconds>: hold the guest lock hold ms out of every period, a slow PC */
+static void lag_thread(void* arg)
+{
+    const int* a = (const int*)arg;
+    int hold = a[0], period = a[1];
+    uint64_t end = rt_monotonic_ns() + (uint64_t)a[2] * 1000000000ull;
+    while (rt_monotonic_ns() < end)
+    {
+        gt_lock();
+        plat_sleep_ms((uint32_t)hold);
+        gt_unlock();
+        plat_sleep_ms((uint32_t)(period > hold ? period - hold : 1));
+    }
+}
+
+static void stall_later(void* arg)
+{
+    const int* a = (const int*)arg;
+    int delay = a[0], ms = a[1];
+    plat_sleep_ms((uint32_t)delay);
+    gt_lock();
+    plat_sleep_ms((uint32_t)ms);
+    gt_unlock();
+}
+
 /* XIVLEGACY_CONTROL=<fifo>: commands, one a line, for driving a running game by hand:
  *   key [ctrl+]<SDL key name>  hold <key> <ms>    click <x> <y>      move <x> <y>      type <text>
  *   keydown <key>  keyup <key>   snap <png path>   stack
+ *   pad <control> <value> [ms]  the scripted gamepad (XIVLEGACY_VPAD=1): a stick axis lx ly rx ry
+ *                           (-32768..32767, y up), a trigger lt rt (0..255) or a button a b x y lb rb l3 r3
+ *                           start back dpup dpdown dpleft dpright (1 down, 0 up); held for ms, then let go
  *   look <button> <dx> <dy> <steps> [ms [still ms]]   hold a mouse button (1 left, 3 right), move by dx, dy each step
  *                           (from where the last click or move left the cursor)
  *   findnan                 guest addresses holding three NaN floats in a row
  *   stall <ms>              hold the guest lock that long (a hitch)
+ *   stallbg <delay> <ms>    the same, from another thread after delay ms (a hitch during a look)
+ *   lag <hold> <period> <s> hold the lock hold ms out of every period ms for s seconds (a slow PC)
  *   wheel <notches> [count] mouse wheel turns, count times */
 static void control_thread(void* arg)
 {
@@ -713,6 +799,20 @@ static void control_thread(void* arg)
             }
             else if (!strncmp(line, "par ", 4))
                 gt_set_parallel_main(atoi(line + 4)); /* par 0|1: the main loop beside the guest lock (XIVLEGACY_PARALLEL) */
+            else if (!strncmp(line, "lag ", 4))
+            {
+                static int args[3];
+                if (sscanf(line + 4, "%d %d %d", &args[0], &args[1], &args[2]) == 3)
+                    plat_thread_start(lag_thread, args);
+            }
+            else if (!strncmp(line, "stallbg ", 8))
+            {
+                /* stallbg <delay ms> <ms>: the same hitch from another thread after a delay, so it can
+                 * land in the middle of a look or hold that follows */
+                static int args[2];
+                if (sscanf(line + 8, "%d %d", &args[0], &args[1]) == 2)
+                    plat_thread_start(stall_later, args);
+            }
             else if (!strncmp(line, "pace ", 5))
             {
                 /* pace 0|1: the main loop's ticks in step with the frames (xiv_misc.c) */
@@ -901,6 +1001,13 @@ static void control_thread(void* arg)
                 fflush(stdout);
                 d3d9_stats();
                 gwin_log_reservations();
+            }
+            else if (!strncmp(line, "pad ", 4))
+            {
+                char name[32];
+                int v = 0, ms = 0;
+                if (sscanf(line + 4, "%31s %d %d", name, &v, &ms) >= 2)
+                    vpad_set(name, v, ms);
             }
             else if (!strcmp(line, "stack"))
             {
@@ -1183,6 +1290,10 @@ int main(int argc, char** argv)
         plat_thread_start(scripted_input, getenv("XIVLEGACY_KEYS"));
     if (getenv("XIVLEGACY_NANWATCH"))
         plat_thread_start(nan_watch, getenv("XIVLEGACY_NANWATCH"));
+    /* XIVLEGACY_VPAD=1: a virtual gamepad from the start (the control FIFO's pad command drives it);
+     * the game only takes gamepads it finds when it starts */
+    if (getenv("XIVLEGACY_VPAD"))
+        vpad_attach();
     if (getenv("XIVLEGACY_CONTROL"))
         plat_thread_start(control_thread, getenv("XIVLEGACY_CONTROL"));
     if (getenv("XIVLEGACY_PROFILE"))
