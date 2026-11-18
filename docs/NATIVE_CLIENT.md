@@ -149,7 +149,11 @@ button is No.
   are camera contexts that read the result as a CharaActor. On 2026-11-12 the lookup returned a
   live BgObjActor after `!goto 1001424` across Ul'dah: the screen went black (camera locked on it),
   then the same SIGBUS at +0x1350. The id looked up was 0xC0000000, the game's "no actor" id, which
-  the map also holds for local actors with no server id (WeaponActor, BgObjActor). An actor freed while still in
+  the map also holds for local actors with no server id (WeaponActor, BgObjActor). The camera's
+  "no lock target" test 0x616F90 (SetContext 0x618650 and the update at 0x619BC2 pick a lock context
+  when it's false) inlined the same lookup without the check, so on Windows 0.1.26 it found the
+  BgObjActor while the lock context's own lookup found nothing: the camera stopped and the player ran
+  on. patches.json makes 0x616F90 call 0x610D30, so the check covers both. An actor freed while still in
   that map is logged with the stack that frees it (`[actors] ... freed while still in its world's
   id map`).
 - A FATAL or crash also logs who freed what the registers point into, the drain's batches and the
