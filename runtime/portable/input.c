@@ -344,10 +344,24 @@ const char* input_pad_name(int index)
 
 static int16_t flip(int16_t v) { return v == -32768 ? 32767 : (int16_t)-v; }
 
+static XPad g_test_xpad;
+static volatile int g_test_xpad_on;
+void input_test_xpad(const XPad* x)
+{
+    if (x)
+        g_test_xpad = *x;
+    g_test_xpad_on = x != NULL;
+}
+
 int input_xpad(int index, XPad* x)
 {
     SDL_Gamepad* p = pad(index);
     memset(x, 0, sizeof *x);
+    if (index == 0 && g_test_xpad_on)
+    {
+        *x = g_test_xpad;
+        return 1;
+    }
     if (!p)
         return 0;
     static const struct

@@ -58,6 +58,9 @@ typedef struct XPad
 } XPad;
 
 int input_xpad(int index, XPad* out);
+/* Tests: what input_xpad reports for pad 0 while one is set (NULL goes back to the real pad), so a
+ * scripted run can drive the controller without one. */
+void input_test_xpad(const XPad* x);
 /* Rumble: motor speeds 0..65535 (XINPUT_VIBRATION), until the next call. */
 void input_rumble(int index, uint16_t low, uint16_t high);
 
