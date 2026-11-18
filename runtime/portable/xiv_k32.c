@@ -423,29 +423,39 @@ static void sh_SleepEx(Guest* g)
     if (ms)
         plat_sleep_ms(ms);
     else
-        plat_yield();
+        k32_spin_yield();
     gt_lock();
     RET(0, 2);
 }
 
 /* SwitchToThread: the guest lock goes to whoever waits. A thread that calls it in a tight loop (a
- * job worker waiting for work) naps instead after a few calls, or its lock traffic slows the thread
- * doing the work. */
+ * job worker waiting for work) naps instead after a few calls (k32_spin_yield), or its lock traffic
+ * slows the thread doing the work. */
 static void sh_SwitchToThread(Guest* g)
 {
-    /* a spin: the previous call returned moments ago (the time spent waiting for the lock is not
-     * counted, it is what makes a spinning thread's calls look far apart) */
-    static _Thread_local uint64_t last_return;
-    static _Thread_local unsigned streak;
-    uint64_t now = rt_monotonic_ns();
-    streak = now - last_return < 100000u ? streak + 1 : 0;
+    static int legacy = -1;
+    if (legacy < 0)
+    {
+        const char* e = getenv("XIVLEGACY_SPINNAP");
+        legacy = e && *e == '0';
+    }
     gt_unlock();
-    if (streak > 4 && !gt_loading()) /* while loading, the worker is what everyone waits for */
-        plat_sleep_ms(1);
+    if (legacy)
+    {
+        /* as before XIVLEGACY_SPINNAP: a 1 ms nap after a few calls in a row, not while loading */
+        static _Thread_local uint64_t last_return;
+        static _Thread_local unsigned streak;
+        uint64_t now = rt_monotonic_ns();
+        streak = now - last_return < 100000u ? streak + 1 : 0;
+        if (streak > 4 && !gt_loading())
+            plat_sleep_ms(1);
+        else
+            plat_yield();
+        last_return = rt_monotonic_ns();
+    }
     else
-        plat_yield();
+        k32_spin_yield();
     gt_lock();
-    last_return = rt_monotonic_ns();
     RET(1, 0);
 }
 

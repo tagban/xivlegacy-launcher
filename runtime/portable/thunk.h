@@ -35,6 +35,8 @@ uint32_t thunk_for(const char* dll, const char* name);
 int thunk_dispatch(Guest* g, uint32_t target);
 /* "DLL!name" for a thunk address, or NULL. */
 const char* thunk_name(uint32_t addr);
+/* the import whose shim this thread is running (0: none) */
+uint32_t thunk_current(void);
 /* Profiling: called with the time of every outermost shim call (nested ones - a window procedure
  * calling back into shims - are inside it), on the calling thread. NULL: not timed. */
 extern void (*thunk_timer)(uint64_t ns);

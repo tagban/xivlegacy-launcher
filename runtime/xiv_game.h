@@ -14,7 +14,7 @@
 
 #include "runtime.h"
 
-#define XIV_GAME_ABI 6 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000; 4: Lua's protected call hook; 5: actor lookup hook; 6: camera follow hook */
+#define XIV_GAME_ABI 7 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000; 4: Lua's protected call hook; 5: actor lookup hook; 6: camera follow hook; 7: locked xadd/cmpxchg/xchg atomic (XIVLEGACY_PARALLEL) */
 
 typedef struct XivHostFns
 {

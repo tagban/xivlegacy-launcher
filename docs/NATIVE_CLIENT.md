@@ -79,6 +79,8 @@ button is No.
 | `XIVLEGACY_CASTCHECK=1` | as each drain starts, the game's own `dynamic_cast<CharaActor>` of every queued actor compared with its RTTI (`[actors] dynamic_cast...` on a mismatch) |
 | `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
+| `XIVLEGACY_PARALLEL=1` | the main loop runs beside the guest lock, as on Windows (experimental: `docs/PARALLEL.md`); control FIFO `par 0`/`par 1` switches it, `mark <text>` logs a marker |
+| `XIVLEGACY_SHIMCOUNT=1` | calls per shim every 5 s, the drawing thread's and the others' |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
 | `XIVLEGACY_MONSTERICONS=0` / `=<id>:<icon>,...` | Monster Mode hotbar icons: keep the game's "Undefined" placeholder / set icons by hand, to try one (`[monstericons]`) |

@@ -41,6 +41,8 @@ void plat_no_throttling(void);
 void plat_sleep_diag(char* out, size_t n);
 #endif
 void plat_sleep_ms(uint32_t ms);
+/* a sleep shorter than a millisecond (as short as the system allows) */
+void plat_sleep_us(uint32_t us);
 void plat_yield(void);
 
 /* Futex-style waiting: plat_wait32 returns once *addr != expected (or spuriously);
