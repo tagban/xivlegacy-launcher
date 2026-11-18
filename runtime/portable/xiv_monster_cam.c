@@ -70,6 +70,8 @@ static float g_scale = 1.0f; /* wanted distance scale */
 static uint32_t g_cam; /* the camera g_applied is for */
 static float g_applied = 1.0f;
 
+static int same_bits(float a, float b) { return memcmp(&a, &b, sizeof a) == 0; }
+
 static int readable(uint32_t a, uint32_t n) { return a >= 0x10000u && gwin_is_committed(a) && gwin_is_committed(a + n - 1); }
 
 static void say(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -192,24 +194,26 @@ void xiv_monster_cam(Guest* g)
     /* a new body: another actor, other camera points, or the aim points rewritten by a setup */
     int32_t hi = (int32_t)rd32(p + OFF_EID_HI), cft = (int32_t)rd32(p + OFF_EID_CFT);
     float hy = rdf32(p + OFF_MAT_HI + 0x34), ly = rdf32(p + OFF_MAT_LO + 0x34);
-    if (p == g_actor && hi == g_eid_hi && cft == g_eid_cft && hy == g_hi_y && ly == g_lo_y)
+    /* bit for bit: a NaN aim height must not count as a new body every frame */
+    if (p == g_actor && hi == g_eid_hi && cft == g_eid_cft && same_bits(hy, g_hi_y) && same_bits(ly, g_lo_y))
     {
         apply(cam);
         return;
     }
-    float name_y, h = body_height(g, p, &name_y);
-    if (h < 0 && ++g_waits < 600)
-        return; /* its model isn't loaded yet: look again */
-    g_waits = 0;
     if (cft >= 0)
     {
-        /* a player race: crafting has its own camera point, which no monster skeleton has */
+        /* a player race: crafting has its own camera point, which no monster skeleton has. Nothing to
+         * measure, so no calls into the game from inside its camera code. */
         if (g_scale != 1.0f || g_verbose)
-            say("[monstercam] player body: nameplate %.2f, height %.2f\n", name_y, h);
-        g_scale = 1.0f;
+            say("[monstercam] player body\n");
+        g_scale = 1.0f, g_waits = 0;
     }
     else
     {
+        float name_y, h = body_height(g, p, &name_y);
+        if (h < 0 && ++g_waits < 600)
+            return; /* its model isn't loaded yet: look again */
+        g_waits = 0;
         if (h < 0)
             name_y = h = NAME_PERSON;
         if (hi < 0 && (int32_t)rd32(p + OFF_EID_LO) < 0) /* no camera points either: aim as at a person */
