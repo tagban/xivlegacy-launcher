@@ -14,7 +14,7 @@ rendering; performance is the work now.
 | Where | What |
 |---|---|
 | `discovery/`, `tools/discover.py` | Ghidra (11.3, Jython) finds every function: the per-build metadata in `meta/` (addresses only) |
-| `meta/ffxivgame.<build>.patches.json` | instruction patches applied before translation (the 2012 clock pin and two crash guards, as Garlemald Client and Seventh Umbral patch the exe; the action bar shown outside active mode, a more solid chat window and the profanity filter off by default) |
+| `meta/ffxivgame.<build>.patches.json` | instruction patches applied before translation (the 2012 clock pin and two crash guards, as Garlemald Client and Seventh Umbral patch the exe; the action bar shown outside active mode, a more solid chat window and the profanity filter off by default; the camera distance clamp compares against the camera's own float limit, so Monster Mode can scale it) |
 | `crates/recomp` | the recompiler: x86 + x87 + SSE/SSE2/MMX to C, `generated/c/` |
 | `runtime/portable/` | the Windows the game sees: kernel32, user32 (SDL3 windows, input, COMCTL32 subclassing), ws2_32, ole32, registry, file system mounts, fibers, XAudio2 2.4 (SDL3 audio), DirectInput/XInput, WinHTTP, D3D9 + D3DX |
 | `runtime/portable/d3d9.c` | Direct3D 9: objects, state, state blocks, resources; hands draws to `gfx9.h` |
@@ -29,7 +29,7 @@ rendering; performance is the work now.
 python3 tools/discover.py --game "<1.23b install>"            # once per build: meta/*.meta.json
 target/release/xivlegacy-recomp recomp --meta meta/ffxivgame.2012.09.19.0001.meta.json \
     --image generated/images/2012.09.19.0001/ffxivgame.exe --retail generated/images/2012.09.19.0001/ffxivgame.exe \
-    --out generated/c --all --patches meta/ffxivgame.2012.09.19.0001.patches.json --hooks streamlog=0x4e7290,replace_lua_protected=0xdcf140,actor_lookup=0x610d55
+    --out generated/c --all --patches meta/ffxivgame.2012.09.19.0001.patches.json --hooks streamlog=0x4e7290,replace_lua_protected=0xdcf140,actor_lookup=0x610d55,camera_follow=0x6163a6
 python3 tools/build.py boot
 build/boot "<1.23b install>" <56-character session id>
 ```
@@ -80,6 +80,8 @@ button is No.
 | `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
+| `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
+| `XIVLEGACY_MONSTERICONS=0` / `=<id>:<icon>,...` | Monster Mode hotbar icons: keep the game's "Undefined" placeholder / set icons by hand, to try one (`[monstericons]`) |
 
 ## Lessons the game taught
 
@@ -154,6 +156,23 @@ button is No.
   logs each translated function that writes there.
 - The CRT's x87 math dispatch jumps through unaligned tables (`discovery/CrtDispatch.py`); the
   MSSMIXER section holds a CPU check outside `.text` (a native stand-in in `xiv_misc.c`).
+
+- Monster Mode (the server gives the local player a monster's model): the third-person camera aims
+  between the skeleton's EID_CAMINT_HI and EID_CAMINT_LOW points (CharaActor+0x16C0/+0x1700, set up by
+  0x664890; 0x664100 aims), but its distances (camera actor +0x3F0..+0x400, default 4.5 and limits
+  1.5..10 in the floats at 0xFB70B8/0xFB70C0/0xFB70BC) are a person's for any body. Monster skeletons
+  lack the crafting camera point EID_CAM_CFT (+0x16A8 is -1), which tells them from player races.
+  The hook at 0x6163A6, the end of 0x616380 that returns the chara the camera follows
+  (`--hooks camera_follow=0x6163a6`, module ABI 6), scales the distances by the body's nameplate
+  height (EID_NAME times the actor's scale) over a person's (`xiv_monster_cam.c`). The clamp setter
+  0x611350 compared against a double 10.0 at 0xF67848 shared with other code; a patch at 0x611372
+  makes it compare against the float at 0xFB70BC.
+- Monster moves (command ids 23011-23645) already have English names and recast times in the client's
+  sheets; only their icon is the placeholder 30000, a picture of a red cross and "Undefined"
+  (data/01/03/04/A6.DAT, 26-byte rows, u16 icon at +0; A7.DAT holds the id runs; A8 the offsets, by
+  id minus the block's first id). `xiv_monster_moves.c` swaps in a player icon by the move's kind
+  from the server's data as the game reads the file. The command sheets' names don't line up with
+  their icon pictures (30146, named Fire, is an ice picture): pick icons by looking at them.
 
 ## Next
 

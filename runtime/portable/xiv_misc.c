@@ -12,6 +12,7 @@
 #include "k32.h"
 #include "pe.h"
 #include "xiv_crashlog.h"
+#include "xiv_monster_cam.h"
 #include "plat.h"
 #include "runtime.h"
 #include "thunk.h"
@@ -550,6 +551,7 @@ void xiv_lua_throw(Guest* g, uint32_t code, uint32_t nargs, uint32_t args)
 
 #ifndef XIVLEGACY_SPLIT
 extern GuestFn rt_hook_actor_lookup __attribute__((weak));
+extern GuestFn rt_hook_camera_follow __attribute__((weak));
 #endif
 
 static void lua_protected_install(void)
@@ -559,11 +561,15 @@ static void lua_protected_install(void)
         *xiv_game->hook_lua_protected = hook_lua_protected;
     if (xiv_game->hook_actor_lookup)
         *xiv_game->hook_actor_lookup = xcl_actor_lookup;
+    if (xiv_game->hook_camera_follow)
+        *xiv_game->hook_camera_follow = xiv_monster_cam;
 #else
     if (&rt_hook_replace_lua_protected)
         rt_hook_replace_lua_protected = hook_lua_protected;
     if (&rt_hook_actor_lookup)
         rt_hook_actor_lookup = xcl_actor_lookup;
+    if (&rt_hook_camera_follow)
+        rt_hook_camera_follow = xiv_monster_cam;
 #endif
 }
 
