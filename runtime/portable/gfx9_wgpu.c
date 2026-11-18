@@ -130,8 +130,104 @@ static G9Tex* g_live[MAX_LIVE];
 static uint32_t g_next_shader_id = 1;
 
 int g9_active(void) { return g_dev != NULL; }
-int g9_persistent(void) { return 0; } /* not yet: every draw copies its vertices and indices */
-void g9_buffer_forget(uint32_t key) { (void)key; }
+/* --- buffers the game seldom writes, kept whole on the GPU (g9_persistent; as gfx9_metal.m) -----------
+ * Each draw copied the vertices and indices it uses into the frame's ring: 13-31 MB a frame in Ul'dah
+ * on a Windows PC, and an index scan per draw (#29). A vertex or index buffer the game made without
+ * D3DUSAGE_DYNAMIC is written once and drawn every frame: it is copied once, to a buffer of its own,
+ * and drawn from there with the game's base vertex until the game writes it again. A new version is a
+ * new buffer, never a write into the old one: a queue write lands before the frame's commands, which
+ * may still draw the old bytes. The old one is released; passes recorded with it keep it alive.
+ * XIVLEGACY_NOPBUF=1: copy every draw, as before. */
+typedef struct
+{
+    uint32_t key, ver, size; /* key 0: free, ~0: free after a removal */
+    WGPUBuffer buf;
+} PBuf;
+#define PBUF_SLOTS 32768u
+static PBuf g_pbuf[PBUF_SLOTS];
+static uint64_t g_st_pbuf_made, g_st_pbuf_bytes;
+
+int g9_persistent(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("XIVLEGACY_NOPBUF") == NULL;
+    return on && g_dev != NULL;
+}
+
+static PBuf* pbuf_find(uint32_t key, int insert)
+{
+    uint32_t h = (key * 2654435761u) % PBUF_SLOTS;
+    PBuf* free_slot = NULL;
+    for (uint32_t n = 0; n < PBUF_SLOTS; ++n, h = (h + 1) % PBUF_SLOTS)
+    {
+        PBuf* p = &g_pbuf[h];
+        if (p->key == key)
+            return p;
+        if (p->key == ~0u && !free_slot)
+            free_slot = p;
+        if (p->key == 0)
+        {
+            if (!insert)
+                return NULL;
+            p = free_slot ? free_slot : p;
+            p->key = key, p->ver = 0, p->size = 0, p->buf = NULL;
+            return p;
+        }
+    }
+    if (insert && free_slot)
+    {
+        free_slot->key = key, free_slot->ver = 0, free_slot->size = 0, free_slot->buf = NULL;
+        return free_slot;
+    }
+    return NULL;
+}
+
+/* the buffer for this key and version, made from the bytes if new; NULL if the table is full */
+static WGPUBuffer pbuf_get(uint32_t key, uint32_t ver, const void* data, uint32_t size)
+{
+    if (!key || !size || !data)
+        return NULL;
+    PBuf* p = pbuf_find(key, 1);
+    if (!p)
+        return NULL;
+    if (p->buf && p->ver == ver && p->size == size)
+        return p->buf;
+    if (p->buf)
+        wgpuBufferRelease(p->buf);
+    WGPUBufferDescriptor bd = { 0 };
+    bd.label = NOLABEL;
+    bd.size = ((uint64_t)size + 3) & ~3ull;
+    bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_Index;
+    bd.mappedAtCreation = 1;
+    p->buf = wgpuDeviceCreateBuffer(g_dev, &bd);
+    if (!p->buf)
+    {
+        p->key = ~0u;
+        return NULL;
+    }
+    uint8_t* m = (uint8_t*)wgpuBufferGetMappedRange(p->buf, 0, (size_t)bd.size);
+    if (m)
+    {
+        memcpy(m, data, size);
+        memset(m + size, 0, (size_t)(bd.size - size));
+    }
+    wgpuBufferUnmap(p->buf);
+    p->ver = ver, p->size = size;
+    g_st_pbuf_made++, g_st_pbuf_bytes += size;
+    return p->buf;
+}
+
+void g9_buffer_forget(uint32_t key)
+{
+    PBuf* p = pbuf_find(key, 0);
+    if (!p)
+        return;
+    if (p->buf)
+        wgpuBufferRelease(p->buf);
+    p->buf = NULL;
+    p->key = ~0u;
+}
 
 static void on_error(WGPUDevice const* device, WGPUErrorType type, WGPUStringView message, void* u1, void* u2)
 {
@@ -321,11 +417,15 @@ static int g_targets_dirty = 1;
 static uint32_t g_submits;
 /* XIVLEGACY_WGPU_STATS: per-frame averages every 120 frames */
 static uint64_t g_st_submits, g_st_passes, g_st_shadows, g_st_ring, g_st_uploads_submit;
+/* why passes ended: target change, mid-pass whole clear, a copy of a bound target, a submit, other */
+enum { WHY_TARGETS, WHY_CLEAR, WHY_SHADOW, WHY_SUBMIT, WHY_OTHER, WHY_N };
+static uint64_t g_st_why[WHY_N];
 
 /* the ring's bytes and the recorded commands to the GPU; wait: until it has run them */
 static void submit(int wait)
 {
     flush_clear();
+    g_st_why[WHY_SUBMIT] += g_pass != NULL;
     end_pass();
     for (uint32_t i = 0; i < g_nchunks; ++i)
         if (g_chunks[i].used)
@@ -1539,6 +1639,7 @@ void g9_set_targets(const G9Target rt[4], G9Tex* depth)
     if (!memcmp(rt, g_rt, sizeof g_rt) && depth == g_ds && !g_targets_dirty)
         return;
     flush_clear();
+    g_st_why[WHY_TARGETS] += g_pass != NULL;
     end_pass();
     memcpy(g_rt, rt, sizeof g_rt);
     g_ds = depth;
@@ -1858,6 +1959,7 @@ void g9_clear(uint32_t nrects, const int32_t* rects, uint32_t flags, uint32_t co
     }
     if (whole)
     {
+        g_st_why[WHY_CLEAR]++;
         end_pass();
         g_clear_flags = flags, g_clear_color = color, g_clear_z = z, g_clear_stencil = stencil;
         begin_pass();
@@ -2013,6 +2115,7 @@ static WGPUTextureView sample_view(G9Tex* t, uint64_t* uid)
     {
         t->shadow_frame = g_frame + 1;
         flush_clear();
+        g_st_why[WHY_SHADOW] += g_pass != NULL;
         end_pass();
         uint32_t layers = t->type == G9_TEX_CUBE ? 6 : 1;
         for (uint32_t level = 0; level < t->levels; ++level)
@@ -2146,9 +2249,13 @@ void g9_draw(const G9Draw* d)
     k.colors = ps->colors;
     current_formats(k.color, &k.depth);
     k.topo = (uint8_t)topology(d->prim);
-    /* indexed strips: the pipeline names the index format (base vertex applied: 32-bit) */
+    /* the game's index buffer kept whole (g9_persistent): drawn as it is, with its base vertex */
+    WGPUBuffer pib = d->indices && d->ikey && d->base_vertex >= 0 && d->prim != 6 && d->ioffset % d->index_size == 0
+                         ? pbuf_get(d->ikey, d->iver, d->iwhole, d->iwhole_size)
+                         : NULL;
+    /* indexed strips: the pipeline names the index format (base vertex applied by a copy: 32-bit) */
     if (d->indices && (d->prim == 3 || d->prim == 5))
-        k.strip = (uint8_t)(d->index_size == 4 || d->base_vertex ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16);
+        k.strip = (uint8_t)(d->index_size == 4 || (d->base_vertex && !pib) ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16);
     k.cull = (uint8_t)(rs[22] == 2 || rs[22] == 3 ? rs[22] : 1);
     k.fill = (uint8_t)(rs[8] == 2 || g_debug_mode == 1 ? 2 : 3);
     if (k.depth)
@@ -2323,6 +2430,15 @@ void g9_draw(const G9Draw* d)
     for (int s = 0; s < k.nslots; ++s)
     {
         const G9Stream* st = &d->streams[stream_of[s]];
+        if (st->key)
+        {
+            WGPUBuffer pb = pbuf_get(st->key, st->ver, st->whole, st->whole_size);
+            if (pb && st->offset < st->whole_size)
+            {
+                wgpuRenderPassEncoderSetVertexBuffer(e, (uint32_t)s, pb, st->offset, WGPU_WHOLE_SIZE);
+                continue;
+            }
+        }
         uint32_t n = k.instanced[s] ? inst : d->indices ? 0 : count;
         uint64_t want = n ? (uint64_t)(n - 1) * st->stride + need[s] : 0;
         uint64_t size = st->size > want ? st->size : want;
@@ -2375,6 +2491,12 @@ void g9_draw(const G9Draw* d)
         }
         wgpuRenderPassEncoderSetIndexBuffer(e, ic->gpu, WGPUIndexFormat_Uint32, off, 4ull * n);
         wgpuRenderPassEncoderDrawIndexed(e, n, inst, 0, 0, 0);
+    }
+    else if (pib)
+    {
+        uint64_t bytes = (uint64_t)count * d->index_size;
+        wgpuRenderPassEncoderSetIndexBuffer(e, pib, d->index_size == 4 ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16, d->ioffset, (bytes + 3) & ~3ull);
+        wgpuRenderPassEncoderDrawIndexed(e, count, inst, 0, d->base_vertex, 0);
     }
     else if (d->indices && d->base_vertex == 0)
     {
@@ -2761,7 +2883,12 @@ static void present_frame(G9Tex* bb)
         rt_log("[gfx9] wgpu a frame: %.1f submits (%.1f for uploads), %.1f passes, %.2f target copies, %.0f KB ring, submit to done %.1f ms\n",
             g_st_submits / 120.0, g_st_uploads_submit / 120.0, g_st_passes / 120.0, g_st_shadows / 120.0, g_st_ring / 120.0 / 1024.0,
             gn ? gns / 1e6 / gn : 0.0);
+        rt_log("[gfx9] wgpu passes ended by: targets %.1f, clears %.1f, target copies %.1f, submits %.1f; static buffers made %.1f (%.0f KB) a frame%s\n",
+            g_st_why[WHY_TARGETS] / 120.0, g_st_why[WHY_CLEAR] / 120.0, g_st_why[WHY_SHADOW] / 120.0, g_st_why[WHY_SUBMIT] / 120.0,
+            g_st_pbuf_made / 120.0, g_st_pbuf_bytes / 120.0 / 1024.0, g9_persistent() ? "" : " (off: XIVLEGACY_NOPBUF)");
         g_st_submits = g_st_passes = g_st_shadows = g_st_ring = g_st_uploads_submit = 0;
+        memset(g_st_why, 0, sizeof g_st_why);
+        g_st_pbuf_made = g_st_pbuf_bytes = 0;
     }
     if (g_frame == 1 || g_frame % 1024 == 0)
         rt_log("[gfx9] frame %llu: %llu draws drawn, %llu skipped so far\n", (unsigned long long)g_frame, (unsigned long long)g_draws,
