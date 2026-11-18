@@ -82,6 +82,7 @@ button is No.
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
 | `XIVLEGACY_MONSTERICONS=0` / `=<id>:<icon>,...` | Monster Mode hotbar icons: keep the game's "Undefined" placeholder / set icons by hand, to try one (`[monstericons]`) |
+| `XIVLEGACY_MONSTERPOINTS=0` / `=<id>` | Monster Points and the monster vendors' shop pack 5124: leave the money and shop sheets alone / name another unused money id instead of 1000124, to try one (`[monsterpoints]`) |
 
 ## Lessons the game taught
 
@@ -173,6 +174,19 @@ button is No.
   id minus the block's first id). `xiv_monster_moves.c` swaps in a player icon by the move's kind
   from the server's data as the game reads the file. The command sheets' names don't line up with
   their icon pictures (30146, named Fire, is an ice picture): pick icons by looking at them.
+- Monster Points (money item 1000124, a placeholder "[en]" row) and the monster vendors' shop pack 5124
+  come from `xiv_monster_points.c`, which serves changed copies of the money text sheets
+  (data/0B/45/03/36 English, 02/D9, 03/93, 03/F0) and the shop sheets (packs 01/03/02/BF-C1, goods
+  01/03/05/19-1B) from a cache folder through `CreateFileA`; the list is
+  `xiv_monster_points_table.h`. A pack row is its first and last goods slot; a goods slot is item id,
+  a flag byte and the price, and the shop window shows that price with the currency's icon. The game
+  only reads goods slots inside the sheet's id span and a header of the size it had: slots appended
+  after 2027211, or given a run of their own, leave the window closed (openShopBuy returns and
+  selectShopBuy waits forever), so the 21 slots fill the hole 2027111-2027131 and the run before them
+  grows. The server's shopRange for 5124 must be the same slots, in the same order. A client without
+  the patch crashes (c000000d at 0x9D22C0) when the server opens pack 5124. The description shows in
+  the currency list, but the list and the shop still name the currency "****": the name there does
+  not come from the sheet's name fields (patching 1000123's row changed only its description).
 
 ## Next
 
