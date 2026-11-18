@@ -477,7 +477,10 @@ void xcl_actor_lookup(Guest* g)
         code = g_rdata_hi && in_text(0x610D4Au);
         for (uint32_t i = 0; code && i < sizeof LOOKUP_CODE; ++i)
             code = rd8(0x610D4Au + i) == LOOKUP_CODE[i];
+        const char* off = getenv("XIVLEGACY_ACTORLOOKUP"); /* =0: leave the game's lookups alone (to rule this check out) */
         const char* m = code ? "[actors] id lookup check on\n" : "[actors] id lookup check off: not the 1.23b code\n";
+        if (code && off && *off == '0')
+            code = 0, m = "[actors] id lookup check off (XIVLEGACY_ACTORLOOKUP=0)\n";
         (void)!write(2, m, strlen(m));
     }
     uint32_t a = g->eax;

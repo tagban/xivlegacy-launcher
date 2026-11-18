@@ -81,6 +81,7 @@ button is No.
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
+| `XIVLEGACY_ACTORLOOKUP=0` | Leave the camera's actor-by-id lookups unchecked (the `[actors] id lookup` check, `actor_lookup` hook): to rule it out |
 | `XIVLEGACY_MONSTERICONS=0` / `=<id>:<icon>,...` | Monster Mode hotbar icons: keep the game's "Undefined" placeholder / set icons by hand, to try one (`[monstericons]`) |
 | `XIVLEGACY_MONSTERPOINTS=0` / `=<id>` | Monster Points and the monster vendors' shop pack 5124: leave the money and shop sheets alone / name another unused money id instead of 1000124, to try one (`[monsterpoints]`) |
 
