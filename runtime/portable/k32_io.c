@@ -14,6 +14,7 @@
 #include "vfs.h"
 #include "xiv_ctimer.h"
 #include "xiv_logtabs.h"
+#include "xiv_monster_moves.h"
 #include "xiv_notice.h"
 
 #define INVALID_HANDLE 0xFFFFFFFFu
@@ -181,6 +182,7 @@ static void file_close(void* f)
 {
     xiv_logtabs_closed(f);
     xiv_notice_closed(f);
+    xiv_monster_moves_closed(f);
     plat_file_close((PlatFile*)f);
 }
 
@@ -241,6 +243,7 @@ static void sh_CreateFileA(Guest* g)
     {
         xiv_logtabs_opened(ARGS(0), host, f);
         xiv_notice_opened(ARGS(0), host, f);
+        xiv_monster_moves_opened(ARGS(0), host, f);
     }
     uint32_t h = k_new(K_FILE, f, file_close);
     gt_set_error((disp == 2 || disp == 4) && existed ? ERROR_ALREADY_EXISTS : 0);
@@ -274,6 +277,7 @@ static void sh_ReadFile(Guest* g)
     gt_lock();
     xiv_logtabs_read(f, -1, (uint8_t*)GUEST_PTR(ARG(1)), got);
     xiv_notice_read(f, -1, (uint8_t*)GUEST_PTR(ARG(1)), got);
+    xiv_monster_moves_read(f, -1, (uint8_t*)GUEST_PTR(ARG(1)), got);
     if (out)
         wr32(out, got > 0 ? (uint32_t)got : 0);
     if (got < 0)
@@ -917,6 +921,7 @@ static void sh_MapViewOfFile(Guest* g)
     gt_lock();
     xiv_logtabs_read(m->file, off, (uint8_t*)GUEST_PTR(v), got);
     xiv_notice_read(m->file, off, (uint8_t*)GUEST_PTR(v), got);
+    xiv_monster_moves_read(m->file, off, (uint8_t*)GUEST_PTR(v), got);
     for (int i = 0; i < 64; ++i)
         if (!g_views[i])
         {

@@ -14,7 +14,7 @@
 
 #include "runtime.h"
 
-#define XIV_GAME_ABI 5 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000; 4: Lua's protected call hook; 5: actor lookup hook */
+#define XIV_GAME_ABI 6 /* 2: rt_table entries carry the fast bodies (guest.h RtRegs); 3: macOS window at 0x10000000000; 4: Lua's protected call hook; 5: actor lookup hook; 6: camera follow hook */
 
 typedef struct XivHostFns
 {
@@ -39,6 +39,8 @@ typedef struct XivGameModule
     GuestFn* hook_lua_protected;
     /* after the id lookup in 0x610D30 (recomp --hooks actor_lookup=0x610d55) */
     GuestFn* hook_actor_lookup;
+    /* the end of 0x616380, the chara the camera follows (recomp --hooks camera_follow=0x6163a6) */
+    GuestFn* hook_camera_follow;
     /* the module's own copies of the runtime's variables */
     unsigned char** guest_base;
     uint32_t* reloc_delta;
