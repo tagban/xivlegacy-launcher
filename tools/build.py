@@ -25,6 +25,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+JOBS = int(os.environ.get('XIVLEGACY_JOBS') or os.cpu_count() or 4)  # parallel compiles
 CFLAGS = ['-std=c11', '-g', '-DRT_GUEST_WINDOW', '-fno-strict-aliasing', '-I', 'runtime', '-I', 'runtime/portable']
 GEN_FLAGS = ['-O2', '-I', 'generated/c', '-Wno-unused-label', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
              '-Wno-unused-function', '-Wno-parentheses-equality', '-Wno-unreachable-code']
@@ -106,7 +107,7 @@ def compile_stale(sources, objdir, flags, header_dirs=(), cc=None):
     if jobs:
         t = time.time()
         failed = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=JOBS) as ex:
             futures = {ex.submit(subprocess.call, cmd, cwd=ROOT): cmd for cmd in jobs}
             for n, fut in enumerate(concurrent.futures.as_completed(futures), 1):
                 if fut.result():
@@ -188,7 +189,7 @@ def win_compile(sources, objdir, flags):
         a, b = os.path.join(ROOT, src), os.path.join(ROOT, obj)
         if not os.path.exists(b) or os.path.getmtime(b) < max(os.path.getmtime(a), newest_header(('runtime', 'runtime/portable'))):
             jobs.append(WIN_CC + ['-c'] + flags + [src, '-o', obj])
-    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=JOBS) as ex:
         bad = [j[-3] for j, r in zip(jobs, ex.map(lambda j: subprocess.call(j, cwd=ROOT), jobs)) if r]
     if bad:
         raise SystemExit('failed: ' + ', '.join(bad))
