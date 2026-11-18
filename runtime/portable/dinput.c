@@ -405,6 +405,33 @@ static void DD_EnumObjects(Guest* g)
     RET(DI_OK, 4);
 }
 
+/* GetObjectInfo(pdidoi, dwObj, dwHow): one gamepad object, by DIPH_BYOFFSET (1, its place in the
+ * data format) or DIPH_BYID (2, type bits | instance << 8). The game asks for each mapped object
+ * when it takes a gamepad, so a pad at start ended the game here before this. */
+static void DD_GetObjectInfo(Guest* g)
+{
+    Dev* d = dev(ARG(0));
+    uint32_t p = ARG(1), obj = ARG(2), how = ARG(3);
+    if (!d || !p)
+        RET(DIERR_INVALIDPARAM, 4);
+    if (d->kind != D_PAD)
+        RET(DIERR_OBJECTNOTFOUND, 4);
+    static const int SRC[3] = { SRC_AXIS, SRC_POV, SRC_BUTTON };
+    static const int COUNT[3] = { PAD_AXES, 1, PAD_BUTTONS };
+    static const uint32_t TYPE[3] = { 0x3u, 0x10u, 0xCu }; /* DIDFT_AXIS, DIDFT_POV, DIDFT_BUTTON */
+    for (int k = 0; k < 3; ++k)
+        for (int i = 0; i < COUNT[k]; ++i)
+        {
+            uint32_t ofs = object_ofs(d, SRC[k], i);
+            if ((how == 1 && obj == ofs) || (how == 2 && (obj & TYPE[k]) && ((obj >> 8) & 0xFFFF) == (uint32_t)i))
+            {
+                write_object(p, SRC[k], i, ofs);
+                RET(DI_OK, 4);
+            }
+        }
+    RET(DIERR_OBJECTNOTFOUND, 4);
+}
+
 /* the axis a DIPROPHEADER addresses: dwHow DIPH_DEVICE (all, -1) or DIPH_BYOFFSET */
 static int prop_axis(const Dev* d, uint32_t ph)
 {
@@ -812,6 +839,7 @@ static const ShimDef DINPUT[] = {
     S("IDirectInputDevice8A", "SetDataFormat", DD_SetDataFormat),
     S("IDirectInputDevice8A", "SetEventNotification", DD_SetEventNotification),
     S("IDirectInputDevice8A", "SetCooperativeLevel", DD_SetCooperativeLevel),
+    S("IDirectInputDevice8A", "GetObjectInfo", DD_GetObjectInfo),
     S("IDirectInputDevice8A", "GetDeviceInfo", DD_GetDeviceInfo),
     S("IDirectInputDevice8A", "Poll", DD_Poll),
     S("IDirectInputDevice8A", "CreateEffect", DD_CreateEffect),
