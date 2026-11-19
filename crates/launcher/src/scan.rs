@@ -32,6 +32,16 @@ fn roots() -> Vec<PathBuf> {
             }
         }
     }
+    if cfg!(target_os = "linux") {
+        // mounted drives and discs: /media/<user>/<drive> (Debian, Ubuntu), /run/media/<user>/<drive>
+        // (Fedora, Arch, SteamOS's SD card), /mnt/<drive>
+        let user = std::env::var("USER").unwrap_or_default();
+        for base in [format!("/media/{user}"), format!("/run/media/{user}"), "/mnt".into()] {
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                r.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+            }
+        }
+    }
     r
 }
 

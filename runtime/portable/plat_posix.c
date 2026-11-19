@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>

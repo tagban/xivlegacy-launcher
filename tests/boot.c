@@ -1019,24 +1019,55 @@ static void control_thread(void* arg)
     }
 }
 
+/* the next mapped region at or after *a: mach_vm_region on macOS, /proc/self/maps on Linux */
+#if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+static int next_region(uint64_t* a, uint64_t* size, int* readable)
+{
+    uint64_t at = *a;
+    mach_vm_size_t sz = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj;
+    if (mach_vm_region(mach_task_self(), &at, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS)
+        return 0;
+    *a = at, *size = sz, *readable = (info.protection & VM_PROT_READ) != 0;
+    return 1;
+}
+#else
+static int next_region(uint64_t* a, uint64_t* size, int* readable)
+{
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f)
+        return 0;
+    unsigned long long lo, hi;
+    char perms[8], line[512];
+    int found = 0;
+    while (!found && fgets(line, sizeof line, f))
+        if (sscanf(line, "%llx-%llx %7s", &lo, &hi, perms) == 3 && hi > *a)
+        {
+            *a = lo > *a ? lo : *a;
+            *size = hi - *a, *readable = perms[0] == 'r', found = 1;
+        }
+    fclose(f);
+    return found;
+}
+#endif
 static void find_floats(const float v[3], float tol, uint32_t from)
 {
-    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(from), end = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0) + 0x100000000ull;
+    uint64_t a = (uint64_t)(uintptr_t)GUEST_PTR(from), end = (uint64_t)(uintptr_t)GUEST_PTR(0) + 0x100000000ull;
     int hits = 0;
     while (a < end && hits < 64)
     {
-        mach_vm_size_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t obj;
-        if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS)
+        uint64_t size = 0;
+        int readable = 0;
+        if (!next_region(&a, &size, &readable))
             break;
         if (a >= end)
             break;
         /* the region holding `from` starts before it: scan from `from` on (paging through hits) */
-        mach_vm_address_t lo = (mach_vm_address_t)(uintptr_t)GUEST_PTR(from);
+        uint64_t lo = (uint64_t)(uintptr_t)GUEST_PTR(from);
         if (a < lo)
         {
             if (a + size <= lo)
@@ -1046,7 +1077,7 @@ static void find_floats(const float v[3], float tol, uint32_t from)
             }
             size -= lo - a, a = lo;
         }
-        if (info.protection & VM_PROT_READ)
+        if (readable)
         {
             const float* f = (const float*)(uintptr_t)a;
             size_t n = (size_t)((a + size > end ? end - a : size) / 4);
@@ -1066,19 +1097,17 @@ static void find_floats(const float v[3], float tol, uint32_t from)
 
 static void find_u32(uint32_t lo, uint32_t hi)
 {
-    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0x10000), end = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0) + 0x100000000ull;
+    uint64_t a = (uint64_t)(uintptr_t)GUEST_PTR(0x10000), end = (uint64_t)(uintptr_t)GUEST_PTR(0) + 0x100000000ull;
     int hits = 0;
     while (a < end && hits < 64)
     {
-        mach_vm_size_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t obj;
-        if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS)
+        uint64_t size = 0;
+        int readable = 0;
+        if (!next_region(&a, &size, &readable))
             break;
         if (a >= end)
             break;
-        if (info.protection & VM_PROT_READ)
+        if (readable)
         {
             const uint32_t* w = (const uint32_t*)(uintptr_t)a;
             size_t n = (size_t)((a + size > end ? end - a : size) / 4);
@@ -1097,19 +1126,17 @@ static void find_u32(uint32_t lo, uint32_t hi)
 /* three NaNs in a row with numbers on both sides: a vector that went bad, not uninitialized memory */
 static void find_nans(void)
 {
-    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)GUEST_PTR(0), end = a + 0x100000000ull;
+    uint64_t a = (uint64_t)(uintptr_t)GUEST_PTR(0), end = a + 0x100000000ull;
     int hits = 0;
     while (a < end && hits < 64)
     {
-        mach_vm_size_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t obj;
-        if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS)
+        uint64_t size = 0;
+        int readable = 0;
+        if (!next_region(&a, &size, &readable))
             break;
         if (a >= end)
             break;
-        if (info.protection & VM_PROT_READ)
+        if (readable)
         {
             const float* f = (const float*)(uintptr_t)a;
             size_t n = (size_t)((a + size > end ? end - a : size) / 4);
@@ -1133,7 +1160,7 @@ static void find_nans(void)
 #include <sys/mman.h>
 static volatile uintptr_t g_watch_lo, g_watch_hi, g_watch_page;
 static volatile int g_watch_open, g_watch_logs;
-static size_t g_page = 16384;
+static size_t g_page = 16384; /* the host page size, read at the first watch */
 
 static void watch_thread(void* arg)
 {
@@ -1155,6 +1182,7 @@ static void watch_start(uint32_t a, uint32_t n)
     if (!started)
     {
         started = 1;
+        g_page = (size_t)sysconf(_SC_PAGESIZE);
         plat_thread_start(watch_thread, NULL);
     }
     if (g_watch_page)
@@ -1174,6 +1202,25 @@ static void watch_stop(void)
         mprotect((void*)p, g_page, PROT_READ | PROT_WRITE);
 }
 
+/* the faulting thread's pc and frame pointer, and the guest esp where translated code keeps it */
+#if defined(__APPLE__) && defined(__aarch64__)
+#define UC_PC(uc) ((uintptr_t)(uc)->uc_mcontext->__ss.__pc)
+#define UC_FP(uc) ((uintptr_t)(uc)->uc_mcontext->__ss.__fp)
+#define UC_GUEST_ESP(uc) ((uint32_t)((uc)->uc_mcontext->__ss.__x[2] >> 32))
+#elif defined(__APPLE__)
+#define UC_PC(uc) ((uintptr_t)(uc)->uc_mcontext->__ss.__rip)
+#define UC_FP(uc) ((uintptr_t)(uc)->uc_mcontext->__ss.__rbp)
+#define UC_GUEST_ESP(uc) 0u
+#elif defined(__aarch64__)
+#define UC_PC(uc) ((uintptr_t)(uc)->uc_mcontext.pc)
+#define UC_FP(uc) ((uintptr_t)(uc)->uc_mcontext.regs[29])
+#define UC_GUEST_ESP(uc) ((uint32_t)((uc)->uc_mcontext.regs[2] >> 32))
+#else
+#define UC_PC(uc) ((uintptr_t)(uc)->uc_mcontext.gregs[REG_RIP])
+#define UC_FP(uc) ((uintptr_t)(uc)->uc_mcontext.gregs[REG_RBP])
+#define UC_GUEST_ESP(uc) 0u
+#endif
+
 /* a write to the watched page: 1 when handled (the faulting store retries) */
 static int watch_fault(void* addr, void* ctx)
 {
@@ -1184,7 +1231,7 @@ static int watch_fault(void* addr, void* ctx)
     {
         g_watch_logs++;
         ucontext_t* uc = (ucontext_t*)ctx;
-        uintptr_t pc = (uintptr_t)uc->uc_mcontext->__ss.__pc, fp = (uintptr_t)uc->uc_mcontext->__ss.__fp;
+        uintptr_t pc = UC_PC(uc), fp = UC_FP(uc);
         char line[512];
         Dl_info di;
         int n = snprintf(line, sizeof line, "[watch] write %08lx by %s", (unsigned long)(a - (uintptr_t)GUEST_PTR(0)),
@@ -1197,7 +1244,7 @@ static int watch_fault(void* addr, void* ctx)
         }
         GThread* wt = gt_holds() ? gt_self() : NULL;
         n += snprintf(line + n, sizeof line - (size_t)n, " (guest esp %08x, gthread stack %08x-%08x, host thread %u)",
-            (uint32_t)(uc->uc_mcontext->__ss.__x[2] >> 32), wt ? wt->stack_lo : 0, wt ? wt->stack_hi : 0, plat_thread_id());
+            UC_GUEST_ESP(uc), wt ? wt->stack_lo : 0, wt ? wt->stack_hi : 0, plat_thread_id());
         line[n++] = '\n';
         write(1, line, (size_t)n);
     }
@@ -1279,6 +1326,9 @@ int main(int argc, char** argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     g_main_thread = pthread_self();
     signal(SIGUSR2, on_stack_request);
+    /* a send to a peer that closed is an error, not the end of the game: Linux has no SO_NOSIGPIPE
+     * (ws2.c sets it on macOS), and the bug report's upload and the game's sockets both send */
+    signal(SIGPIPE, SIG_IGN);
     int rc = xiv_boot_prepare(&argc, argv);
     if (rc)
         return rc;
