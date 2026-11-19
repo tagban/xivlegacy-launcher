@@ -124,7 +124,7 @@ covers the display only at the display's own size, or with `XIVLEGACY_FULLSCREEN
 | `XIVLEGACY_PARALLEL=1` | the main loop runs beside the guest lock, as on Windows (experimental: `docs/PARALLEL.md`); control FIFO `par 0`/`par 1` switches it, `mark <text>` logs a marker |
 | `XIVLEGACY_SHIMCOUNT=1` | calls per shim every 5 s, the drawing thread's and the others' |
 | `XIVLEGACY_VOLUME=<0-100>`, `XIVLEGACY_VSYNC=0` / `1`, `XIVLEGACY_FULLSCREEN=1` | the sound's loudness; VSync over the game's choice; the game's full-screen window covers the display (Settings) |
-| `XIVLEGACY_BUG_TAG=<words>` | the bug-report chat line opens with `!bug <words> ` instead of `!bug ` (launch profiles set `speed A`-`speed G`) |
+| `XIVLEGACY_BUG_TAG=<words>` | the bug-report chat line opens with `!bug <words> ` instead of `!bug ` (launch profiles set `speed A`-`speed I` and `speed P`) |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
 | `XIVLEGACY_ACTORLOOKUP=0` | Leave the camera's actor-by-id lookups unchecked (the `[actors] id lookup` check, `actor_lookup` hook): to rule it out |

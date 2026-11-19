@@ -1758,7 +1758,12 @@ static void present(void)
             rt_log("[d3d9] locks: drawer waited %.2f ms a frame for the guest lock, %.2f ms for the runtime lock (%.0f takes); others %.2f ms\n",
                 (gw - last_gw) / 60e6, (rg - last_rg) / 60e6, (rtk - last_rt) / 60.0, (ro - last_ro) / 60e6);
             last_rg = rg, last_ro = ro, last_rt = rtk, last_gw = gw;
-            static uint64_t last_dn, last_pn;
+            static uint64_t last_dn, last_pn, last_tk, last_np;
+            uint64_t tk, np;
+            xiv_pace_costs(&tk, &np);
+            rt_log("[d3d9] pacing: drawer waited %.2f ms a frame for the main loop's tick, napped %.2f ms a frame (loading or answering a tap)\n",
+                (tk - last_tk) / 60e6, (np - last_np) / 60e6);
+            last_tk = tk, last_np = np;
             rt_log("[d3d9] frames %llu-%llu: %.1f fps, %.1f draws, %.1f clears a frame, main loop %.1f/s; renderer %.2f ms draws + %.2f ms present a frame\n",
                 (unsigned long long)g_dev->frames - 59, (unsigned long long)g_dev->frames, last_ns ? 60e9 / (double)(now - last_ns) : 0.0,
                 (g_dev->draws - last_draws) / 60.0, (g_dev->clears - last_clears) / 60.0,
