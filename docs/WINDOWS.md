@@ -39,14 +39,14 @@ The common ones need no typing: Settings has a row each for `FRAMESTATS`, `WGPU_
 `WGPU_PRESENT`, `MONSTERCAM`, `ACTORLOOKUP`, `PARALLEL`, `CPUSETS`, `NOPBUF`, `SPINNAP` and
 `LOCKWAKE`, and the launch profile beside Join runs one speed test without changing Settings:
 Speed test A (defaults), B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
-G `WGPU_BACKEND=dx12`, each with `FRAMESTATS=1`. Ctrl+F12 in that run opens `!bug speed <letter> `
+G `WGPU_BACKEND=vulkan`, each with `FRAMESTATS=1`. Ctrl+F12 in that run opens `!bug speed <letter> `
 for the report. A switch this client does not know is ignored, so an older client is safe.
 
 | Variable | Does |
 | --- | --- |
 | `XIVLEGACY_FRAMESTATS=1` | frame time statistics in the log |
 | `XIVLEGACY_WAITPROF=1` | every 2 s: frames, and where the drawing thread spent its time per import (`[waitprof]`, `API time`). On a Mac at the title screen: 120 frames, Sleep ~650 ms, Present ~60 ms, timeGetTime ~800k calls |
-| `XIVLEGACY_WGPU_BACKEND=dx12` / `vulkan` | which API wgpu drives (default: wgpu's pick, Vulkan on most PCs) |
+| `XIVLEGACY_WGPU_BACKEND=dx12` / `vulkan` | which API wgpu drives (default: `dx12` on Windows since the 0.1.29 speed tests: ~17% faster than Vulkan on an RTX 4060; wgpu's pick when there's no Direct3D 12 adapter) |
 | `XIVLEGACY_WGPU_PRESENT=fifo` / `mailbox` / `immediate` | present mode (vsync or not) |
 | `XIVLEGACY_WGPU_STATS=1` | per-frame wgpu costs (passes and what ended them, uploads, static buffers made) |
 | `XIVLEGACY_NOAUDIO=1` | no audio device (to tell audio stalls from graphics ones); Settings' Sound Off sets it |

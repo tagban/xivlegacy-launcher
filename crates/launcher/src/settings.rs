@@ -155,7 +155,7 @@ pub const PROFILES: &[Profile] = &[
     Profile { name: "Speed test D (NOPBUF=1)", tag: "speed D", env: &[MEASURE, ("XIVLEGACY_NOPBUF", "1")] },
     Profile { name: "Speed test E (SPINNAP=0)", tag: "speed E", env: &[MEASURE, ("XIVLEGACY_SPINNAP", "0")] },
     Profile { name: "Speed test F (LOCKWAKE=all)", tag: "speed F", env: &[MEASURE, ("XIVLEGACY_LOCKWAKE", "all")] },
-    Profile { name: "Speed test G (WGPU_BACKEND=dx12)", tag: "speed G", env: &[MEASURE, ("XIVLEGACY_WGPU_BACKEND", "dx12")] },
+    Profile { name: "Speed test G (WGPU_BACKEND=vulkan)", tag: "speed G", env: &[MEASURE, ("XIVLEGACY_WGPU_BACKEND", "vulkan")] },
 ];
 
 /// What the environment list leaves set, in order (later wins): name -> value, None unset.

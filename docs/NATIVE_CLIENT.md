@@ -76,7 +76,7 @@ The launcher logs what it set (`settings:` and `game switches:` in launcher.log)
 **Launch profiles.** The drop-down beside Join (left and right on a gamepad) picks switches for the
 next Join only; it goes back to Normal once the game starts. Speed test A is the defaults, B to G add
 one switch each (B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
-G `WGPU_BACKEND=dx12`, Windows), and every speed test adds `XIVLEGACY_FRAMESTATS=1`. A profile wins
+G `WGPU_BACKEND=vulkan`, Windows, where Direct3D 12 is the default), and every speed test adds `XIVLEGACY_FRAMESTATS=1`. A profile wins
 over Settings for its switches. Under the Join row the launcher shows every switch that Join sets.
 A speed test also sets `XIVLEGACY_BUG_TAG=speed <letter>`, so the in-game report (Ctrl+F12, or both
 sticks held in) opens the chat line with `!bug speed <letter> ` and the report says which run it was.
