@@ -492,10 +492,18 @@ RT_INLINE void wrf80(uint32_t a, double v)
  * local the compiler cannot see through, so it stays in a register and an access [reg + disp] is
  * one load or store with the displacement folded in. With the base a constant, clang formed each
  * address anew (add, orr with the base, then the access). The helpers above keep the plain form. */
-#if defined(RT_TRANSLATION) && defined(RT_GUEST_WINDOW) && defined(RT_GUEST_FIXED_BASE) && (defined(__clang__) || defined(__GNUC__))
+#if defined(RT_TRANSLATION) && defined(RT_GUEST_WINDOW) && (defined(__clang__) || defined(__GNUC__))
 RT_INLINE unsigned char* rt_opaque_base(void)
 {
+#if defined(RT_GUEST_FIXED_BASE)
     unsigned char* p = (unsigned char*)(uintptr_t)(RT_GUEST_FIXED_BASE);
+#else
+    /* Windows: the window is wherever the host reserved it, and rt_guest_base never changes after
+     * that. Read once per function into the local: through the variable, every guest store (which
+     * may alias anything under -fno-strict-aliasing) made the next access reload the base, in a
+     * DLL through its import too. */
+    unsigned char* p = rt_guest_base;
+#endif
     __asm__("" : "+r"(p));
     return p;
 }
