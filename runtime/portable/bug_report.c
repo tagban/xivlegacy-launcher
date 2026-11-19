@@ -6,7 +6,8 @@
  *
  * XIVLEGACY_LOGS: the folder of game.log and game.prev.log (the launcher sets it)
  * XIVLEGACY_LAUNCHER_LOG: the launcher's own log
- * XIVLEGACY_WEB: the web front as host[:port] (default: XIVLEGACY_LOBBY, port 54993) */
+ * XIVLEGACY_WEB: the web front as host[:port] (default: XIVLEGACY_LOBBY, port 54993)
+ * XIVLEGACY_BUG_TAG: words typed after "!bug " (the launcher's launch profile: "speed B") */
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -177,7 +178,7 @@ static void post_file(const char* name, const char* path, int is_log)
     free(data);
 }
 
-/* the chat line opened with "!bug " in it */
+/* the chat line opened with "!bug " (and the tag) in it */
 static void open_chat(void)
 {
     int n = 0;
@@ -193,7 +194,11 @@ static void open_chat(void)
         SDL_PushEvent(&e);
         plat_sleep_ms(150);
     }
-    for (const char* p = "!bug "; *p; ++p)
+    /* XIVLEGACY_BUG_TAG: words put after "!bug " (the launcher's launch profile, e.g. "speed B") */
+    char line[96];
+    const char* tag = getenv("XIVLEGACY_BUG_TAG");
+    snprintf(line, sizeof line, "!bug %s%s", tag && *tag ? tag : "", tag && *tag ? " " : "");
+    for (const char* p = line; *p; ++p)
     {
         SDL_Event t;
         memset(&t, 0, sizeof t);

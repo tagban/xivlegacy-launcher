@@ -129,10 +129,15 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
             None => cmd.env_remove(k),
         };
     }
-    if !env.is_empty() {
-        let shown: Vec<String> = env.iter().map(|(k, v)| format!("{k}={}", v.as_deref().unwrap_or(""))).collect();
-        crate::config::log(&format!("game switches: {}", shown.join(" ")));
-    }
+    // the log says what's set, and what was cleared from this launcher's own environment (setx)
+    let last: std::collections::BTreeMap<&str, Option<&str>> = env.iter().map(|(k, v)| (k.as_str(), v.as_deref())).collect();
+    let set: Vec<String> = last.iter().filter_map(|(k, v)| v.map(|v| format!("{k}={v}"))).collect();
+    let cleared: Vec<&str> = last.iter().filter(|(k, v)| v.is_none() && std::env::var_os(k).is_some()).map(|(k, _)| *k).collect();
+    crate::config::log(&format!(
+        "game switches: {}{}",
+        if set.is_empty() { "none".to_string() } else { set.join(" ") },
+        if cleared.is_empty() { String::new() } else { format!(" (cleared: {})", cleared.join(" ")) }
+    ));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

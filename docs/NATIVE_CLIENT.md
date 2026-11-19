@@ -67,9 +67,19 @@ Join, through what the game and the client already read:
 | Volume | `XIVLEGACY_VOLUME=0`-`100`: the gain of the client's one output stream |
 | VSync | `XIVLEGACY_VSYNC=0` / `1`, over the game's own present interval (Metal and wgpu) |
 | Graphics API (Windows, Linux) | `XIVLEGACY_WGPU_BACKEND` |
+| Test switches | one row each for `FRAMESTATS`, `WGPU_STATS`, `WGPU_PRESENT`, `MONSTERCAM`, `ACTORLOOKUP` and the speed-test switches `PARALLEL`, `CPUSETS`, `NOPBUF`, `SPINNAP`, `LOCKWAKE` (all `XIVLEGACY_`); the first choice of each unsets the variable for the game, even one set with `setx`. A switch a client does not know is ignored |
 | Extra switches | any `NAME=value` lines, set for the game after the ones above; `NAME=` clears one set with `setx`. `set`, `setx` and `export` lines are taken as they are |
 
-The launcher logs what it set (`settings:` and `game switches:` in launcher.log).
+The launcher logs what it set (`settings:` and `game switches:` in launcher.log). Sound On unsets
+`XIVLEGACY_NOAUDIO` (the client mutes on any value but `0`, so a value left by `setx` is cleared).
+
+**Launch profiles.** The drop-down beside Join (left and right on a gamepad) picks switches for the
+next Join only; it goes back to Normal once the game starts. Speed test A is the defaults, B to G add
+one switch each (B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
+G `WGPU_BACKEND=dx12`, Windows), and every speed test adds `XIVLEGACY_FRAMESTATS=1`. A profile wins
+over Settings for its switches. Under the Join row the launcher shows every switch that Join sets.
+A speed test also sets `XIVLEGACY_BUG_TAG=speed <letter>`, so the in-game report (Ctrl+F12, or both
+sticks held in) opens the chat line with `!bug speed <letter> ` and the report says which run it was.
 
 config.sys is what ffxivconfig.exe writes; ffxivgame.exe reads it at start-up (0x405C90, version
 0x20120419, 0xE0 bytes of little-endian u32s and two UTF-16 strings). +0x10 is 0 for a window with a
@@ -112,6 +122,7 @@ covers the display only at the display's own size, or with `XIVLEGACY_FULLSCREEN
 | `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal (`XIVLEGACY_NOAUDIO=0` keeps the sound) |
 | `XIVLEGACY_VOLUME=<0-100>`, `XIVLEGACY_VSYNC=0` / `1`, `XIVLEGACY_FULLSCREEN=1` | the sound's loudness; VSync over the game's choice; the game's full-screen window covers the display (Settings) |
+| `XIVLEGACY_BUG_TAG=<words>` | the bug-report chat line opens with `!bug <words> ` instead of `!bug ` (launch profiles set `speed A`-`speed G`) |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
 | `XIVLEGACY_ACTORLOOKUP=0` | Leave the camera's actor-by-id lookups unchecked (the `[actors] id lookup` check, `actor_lookup` hook): to rule it out |

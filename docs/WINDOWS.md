@@ -35,6 +35,13 @@ are set for the game at each Join, so A/B tests need no `setx` (and `NAME=` ther
 set with `setx`, for that game only). `setx` lines can be pasted in as they are. launcher.log lists
 what each Join set (`game switches:`).
 
+The common ones need no typing: Settings has a row each for `FRAMESTATS`, `WGPU_STATS`,
+`WGPU_PRESENT`, `MONSTERCAM`, `ACTORLOOKUP`, `PARALLEL`, `CPUSETS`, `NOPBUF`, `SPINNAP` and
+`LOCKWAKE`, and the launch profile beside Join runs one speed test without changing Settings:
+Speed test A (defaults), B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
+G `WGPU_BACKEND=dx12`, each with `FRAMESTATS=1`. Ctrl+F12 in that run opens `!bug speed <letter> `
+for the report. A switch this client does not know is ignored, so an older client is safe.
+
 | Variable | Does |
 | --- | --- |
 | `XIVLEGACY_FRAMESTATS=1` | frame time statistics in the log |

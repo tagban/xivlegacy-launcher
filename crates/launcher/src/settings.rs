@@ -83,6 +83,84 @@ pub struct GameSettings {
     /// One switch a line: `NAME=value`, or `NAME=` to clear one set elsewhere (setx). `set`,
     /// `setx` and `export` forms are taken too, and `#` starts a comment.
     pub extra_env: String,
+    /// The test switches chosen (SWITCHES): name -> value. A switch not here is left unset.
+    pub switches: std::collections::BTreeMap<String, String>,
+}
+
+/// A test switch the client reads, offered as a row: its choices are (label, value), the first
+/// one leaving the variable unset (the client's own default).
+pub struct Switch {
+    pub name: &'static str,
+    pub help: &'static str,
+    pub choices: &'static [(&'static str, Option<&'static str>)],
+}
+
+const OFF_ON: &[(&str, Option<&str>)] = &[("Off", None), ("On", Some("1"))];
+
+/// The test switches on the Settings screen. Speed switches come from launcher #31 (perf/windows);
+/// a client without them ignores them, as it does any variable it doesn't read.
+pub const SWITCHES: &[Switch] = &[
+    Switch { name: "XIVLEGACY_FRAMESTATS", help: "fps, draws and clears every 60 frames, and each slow frame, in game.log", choices: OFF_ON },
+    Switch { name: "XIVLEGACY_WGPU_STATS", help: "per-frame wgpu costs (passes, uploads) in game.log; wgpu builds (Windows, Linux)", choices: OFF_ON },
+    Switch {
+        name: "XIVLEGACY_WGPU_PRESENT",
+        help: "wgpu's present mode, over VSync: fifo waits for the display, mailbox and immediate don't",
+        choices: &[("As the game asks", None), ("fifo", Some("fifo")), ("mailbox", Some("mailbox")), ("immediate", Some("immediate"))],
+    },
+    Switch {
+        name: "XIVLEGACY_MONSTERCAM",
+        help: "Monster Mode camera distances; Log writes each body and its scale to game.log",
+        choices: &[("On", None), ("Off", Some("0")), ("Log", Some("2"))],
+    },
+    Switch {
+        name: "XIVLEGACY_ACTORLOOKUP",
+        help: "the camera's actor-by-id lookup check; Off leaves the lookups unchecked, to rule it out",
+        choices: &[("On", None), ("Off", Some("0"))],
+    },
+    Switch { name: "XIVLEGACY_PARALLEL", help: "speed test: the game's main loop runs beside the guest lock", choices: OFF_ON },
+    Switch {
+        name: "XIVLEGACY_CPUSETS",
+        help: "speed test: keep the game on the V-Cache cores (Ryzen X3D); Off lets Windows place it",
+        choices: &[("On", None), ("Off", Some("0"))],
+    },
+    Switch { name: "XIVLEGACY_NOPBUF", help: "speed test: wgpu's static-buffer switch (NOPBUF=1)", choices: OFF_ON },
+    Switch {
+        name: "XIVLEGACY_SPINNAP",
+        help: "speed test: a short nap while a thread spins for the lock; Off spins without it",
+        choices: &[("On", None), ("Off", Some("0"))],
+    },
+    Switch {
+        name: "XIVLEGACY_LOCKWAKE",
+        help: "speed test: which waiters a freed lock wakes; All wakes every one, not only the next",
+        choices: &[("Next only", None), ("All", Some("all"))],
+    },
+];
+
+/// A launch profile: switches for one Join, over the Settings, and the tag its bug reports get.
+pub struct Profile {
+    pub name: &'static str,
+    /// Typed after "!bug " by the in-game report key (XIVLEGACY_BUG_TAG).
+    pub tag: &'static str,
+    pub env: &'static [(&'static str, &'static str)],
+}
+
+const MEASURE: (&str, &str) = ("XIVLEGACY_FRAMESTATS", "1");
+
+/// Normal, then the Windows speed test runs (launcher #31's recipe), each measuring with FRAMESTATS.
+pub const PROFILES: &[Profile] = &[
+    Profile { name: "Normal", tag: "", env: &[] },
+    Profile { name: "Speed test A (defaults)", tag: "speed A", env: &[MEASURE] },
+    Profile { name: "Speed test B (PARALLEL=1)", tag: "speed B", env: &[MEASURE, ("XIVLEGACY_PARALLEL", "1")] },
+    Profile { name: "Speed test C (CPUSETS=0)", tag: "speed C", env: &[MEASURE, ("XIVLEGACY_CPUSETS", "0")] },
+    Profile { name: "Speed test D (NOPBUF=1)", tag: "speed D", env: &[MEASURE, ("XIVLEGACY_NOPBUF", "1")] },
+    Profile { name: "Speed test E (SPINNAP=0)", tag: "speed E", env: &[MEASURE, ("XIVLEGACY_SPINNAP", "0")] },
+    Profile { name: "Speed test F (LOCKWAKE=all)", tag: "speed F", env: &[MEASURE, ("XIVLEGACY_LOCKWAKE", "all")] },
+    Profile { name: "Speed test G (WGPU_BACKEND=dx12)", tag: "speed G", env: &[MEASURE, ("XIVLEGACY_WGPU_BACKEND", "dx12")] },
+];
+
+/// What the environment list leaves set, in order (later wins): name -> value, None unset.
+pub fn resolve(env: &[(String, Option<String>)]) -> std::collections::BTreeMap<String, Option<String>> {
+    env.iter().cloned().collect()
 }
 
 impl Default for GameSettings {
@@ -96,6 +174,7 @@ impl Default for GameSettings {
             vsync: VSync::Game,
             graphics_api: String::new(),
             extra_env: String::new(),
+            switches: Default::default(),
         }
     }
 }
@@ -152,29 +231,57 @@ pub fn parse_extra(text: &str) -> (Vec<(String, Option<String>)>, Vec<BadLine>) 
 }
 
 impl GameSettings {
-    /// The environment switches for the client, in the order they apply (later wins): what the
-    /// settings choose, then the extra box. `mute` is the launcher's own --mute.
-    pub fn env(&self, mute: bool) -> Vec<(String, Option<String>)> {
+    /// The environment switches for the client, in the order they apply (later wins): the
+    /// settings, the test switches, the launch profile (`PROFILES[profile]`), then the extra box.
+    /// Every switch the screen manages is unset when left at its default, so a value set with setx
+    /// can't leak into a test run. `mute` is the launcher's own --mute.
+    pub fn env(&self, mute: bool, profile: usize) -> Vec<(String, Option<String>)> {
         let mut v: Vec<(String, Option<String>)> = Vec::new();
-        let mut set = |k: &str, val: String| v.push((k.to_string(), Some(val)));
-        if !self.sound || mute {
-            set("XIVLEGACY_NOAUDIO", "1".into());
-        } else if self.volume < 100 {
-            set("XIVLEGACY_VOLUME", self.volume.to_string());
+        let mut put = |k: &str, val: Option<String>| v.push((k.to_string(), val));
+        // XIVLEGACY_NOAUDIO is checked for being there (before this client): unset, not "0"
+        put("XIVLEGACY_NOAUDIO", (!self.sound || mute).then(|| "1".into()));
+        put("XIVLEGACY_VOLUME", (self.sound && !mute && self.volume < 100).then(|| self.volume.to_string()));
+        put("XIVLEGACY_FULLSCREEN", (self.display == Display::FullScreen).then(|| "1".into()));
+        put(
+            "XIVLEGACY_VSYNC",
+            match self.vsync {
+                VSync::Game => None,
+                VSync::On => Some("1".into()),
+                VSync::Off => Some("0".into()),
+            },
+        );
+        if !cfg!(target_os = "macos") {
+            put("XIVLEGACY_WGPU_BACKEND", (!self.graphics_api.is_empty()).then(|| self.graphics_api.clone()));
         }
-        if self.display == Display::FullScreen {
-            set("XIVLEGACY_FULLSCREEN", "1".into());
+        for sw in SWITCHES {
+            let chosen = self.switches.get(sw.name).filter(|val| sw.choices.iter().any(|c| c.1 == Some(val.as_str())));
+            put(sw.name, chosen.cloned());
         }
-        match self.vsync {
-            VSync::Game => {}
-            VSync::On => set("XIVLEGACY_VSYNC", "1".into()),
-            VSync::Off => set("XIVLEGACY_VSYNC", "0".into()),
+        let p = PROFILES.get(profile).unwrap_or(&PROFILES[0]);
+        for (k, val) in p.env {
+            put(k, Some(val.to_string()));
         }
-        if !cfg!(target_os = "macos") && !self.graphics_api.is_empty() {
-            set("XIVLEGACY_WGPU_BACKEND", self.graphics_api.clone());
-        }
+        put("XIVLEGACY_BUG_TAG", (!p.tag.is_empty()).then(|| p.tag.to_string()));
         v.extend(parse_extra(&self.extra_env).0);
         v
+    }
+
+    /// The switches a Join sets (name=value), for the screen and the log: what makes a run a test run.
+    pub fn shown(&self, mute: bool, profile: usize) -> Vec<String> {
+        resolve(&self.env(mute, profile)).into_iter().filter_map(|(k, val)| val.map(|val| format!("{k}={val}"))).collect()
+    }
+
+    /// The choice index of a test switch (0: unset).
+    pub fn switch_index(&self, sw: &Switch) -> usize {
+        let cur = self.switches.get(sw.name).map(String::as_str);
+        sw.choices.iter().position(|c| c.1 == cur).unwrap_or(0)
+    }
+
+    pub fn set_switch(&mut self, sw: &Switch, i: usize) {
+        match sw.choices[i].1 {
+            Some(val) => self.switches.insert(sw.name.to_string(), val.to_string()),
+            None => self.switches.remove(sw.name),
+        };
     }
 
     /// The resolution as the game will use it.
@@ -315,26 +422,61 @@ mod tests {
         assert_eq!(read_config_sys(&config_sys(None, &s)), Some((1024, 720, false)));
     }
 
+    fn set(env: &[(String, Option<String>)]) -> Vec<(String, String)> {
+        resolve(env).into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect()
+    }
+
+    fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
+        p.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
     #[test]
     fn env_from_settings() {
         let d = GameSettings::default();
-        assert!(d.env(false).is_empty());
-        assert_eq!(d.env(true), vec![("XIVLEGACY_NOAUDIO".to_string(), Some("1".to_string()))]);
+        assert!(set(&d.env(false, 0)).is_empty());
+        // left at the default, a managed switch is unset, so a setx value doesn't leak in
+        let r = resolve(&d.env(false, 0));
+        for k in ["XIVLEGACY_NOAUDIO", "XIVLEGACY_VSYNC", "XIVLEGACY_PARALLEL", "XIVLEGACY_BUG_TAG"] {
+            assert_eq!(r.get(k), Some(&None), "{k}");
+        }
+        assert_eq!(set(&d.env(true, 0)), pairs(&[("XIVLEGACY_NOAUDIO", "1")]));
         let quiet = GameSettings { volume: 40, vsync: VSync::Off, ..Default::default() };
-        assert_eq!(
-            quiet.env(false),
-            vec![
-                ("XIVLEGACY_VOLUME".to_string(), Some("40".to_string())),
-                ("XIVLEGACY_VSYNC".to_string(), Some("0".to_string()))
-            ]
-        );
+        assert_eq!(set(&quiet.env(false, 0)), pairs(&[("XIVLEGACY_VOLUME", "40"), ("XIVLEGACY_VSYNC", "0")]));
         let off = GameSettings { sound: false, volume: 40, ..Default::default() };
-        assert_eq!(off.env(false), vec![("XIVLEGACY_NOAUDIO".to_string(), Some("1".to_string()))]);
+        assert_eq!(set(&off.env(false, 0)), pairs(&[("XIVLEGACY_NOAUDIO", "1")]));
         let full = GameSettings { display: Display::FullScreen, ..Default::default() };
-        assert_eq!(full.env(false), vec![("XIVLEGACY_FULLSCREEN".to_string(), Some("1".to_string()))]);
+        assert_eq!(set(&full.env(false, 0)), pairs(&[("XIVLEGACY_FULLSCREEN", "1")]));
         assert_eq!(read_config_sys(&config_sys(None, &full)), Some((1280, 720, true)));
         let api = GameSettings { graphics_api: "vulkan".into(), ..Default::default() };
-        assert_eq!(api.env(false).len(), usize::from(!cfg!(target_os = "macos")));
+        assert_eq!(set(&api.env(false, 0)).len(), usize::from(!cfg!(target_os = "macos")));
+    }
+
+    #[test]
+    fn test_switches_and_profiles() {
+        let mut g = GameSettings::default();
+        let cam = SWITCHES.iter().find(|s| s.name == "XIVLEGACY_MONSTERCAM").unwrap();
+        g.set_switch(cam, 2);
+        assert_eq!(g.switch_index(cam), 2);
+        assert_eq!(set(&g.env(false, 0)), pairs(&[("XIVLEGACY_MONSTERCAM", "2")]));
+        g.set_switch(cam, 0);
+        assert!(g.switches.is_empty());
+        // a stale value in launcher.json that no choice has is left unset
+        g.switches.insert("XIVLEGACY_CPUSETS".into(), "7".into());
+        assert!(set(&g.env(false, 0)).is_empty());
+        g.switches.clear();
+        let b = PROFILES.iter().position(|p| p.tag == "speed B").unwrap();
+        assert_eq!(
+            set(&g.env(false, b)),
+            pairs(&[("XIVLEGACY_BUG_TAG", "speed B"), ("XIVLEGACY_FRAMESTATS", "1"), ("XIVLEGACY_PARALLEL", "1")])
+        );
+        assert_eq!(g.shown(false, b), vec!["XIVLEGACY_BUG_TAG=speed B", "XIVLEGACY_FRAMESTATS=1", "XIVLEGACY_PARALLEL=1"]);
+        // the extra box still wins
+        g.extra_env = "XIVLEGACY_PARALLEL=".into();
+        assert_eq!(resolve(&g.env(false, b)).get("XIVLEGACY_PARALLEL"), Some(&None));
+        // every profile's tag is "speed <letter>", A to G in order
+        for (i, p) in PROFILES.iter().enumerate().skip(1) {
+            assert_eq!(p.tag, format!("speed {}", (b'A' + i as u8 - 1) as char));
+        }
     }
 
     #[test]
@@ -355,8 +497,8 @@ mod tests {
         );
         assert_eq!(bad.iter().map(|b| b.line).collect::<Vec<_>>(), vec![7, 8]);
         // the extra box wins over the settings above it
-        let g = GameSettings { sound: false, extra_env: "XIVLEGACY_NOAUDIO=0".into(), ..Default::default() };
-        assert_eq!(g.env(false).last(), Some(&s("XIVLEGACY_NOAUDIO", Some("0"))));
+        let g = GameSettings { sound: false, extra_env: "XIVLEGACY_NOAUDIO=".into(), ..Default::default() };
+        assert_eq!(resolve(&g.env(false, 0)).get("XIVLEGACY_NOAUDIO"), Some(&None));
     }
 
     #[test]

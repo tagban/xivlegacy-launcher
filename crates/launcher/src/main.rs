@@ -41,8 +41,10 @@ const DIRECTX_URL: &str = "https://www.microsoft.com/en-us/download/details.aspx
 fn main() -> eframe::Result {
     // XIVLegacy --make-game <game folder>: make the game module from a terminal, then exit.
     let args: Vec<String> = std::env::args().collect();
-    // --mute: this run's game has no sound, whatever Settings say (test sessions)
-    MUTE.store(args.iter().any(|a| a == "--mute"), std::sync::atomic::Ordering::Relaxed);
+    // --mute (or XIVLEGACY_NOAUDIO in the launcher's own environment): this run's games have no
+    // sound, whatever Settings say (test sessions)
+    let env_mute = std::env::var("XIVLEGACY_NOAUDIO").is_ok_and(|v| !v.is_empty() && v != "0");
+    MUTE.store(env_mute || args.iter().any(|a| a == "--mute"), std::sync::atomic::Ordering::Relaxed);
     if args.get(1).map(String::as_str) == Some("--make-game") {
         let Some(dir) = args.get(2) else {
             eprintln!("usage: XIVLegacy --make-game <FINAL FANTASY XIV 1.23b folder>");
@@ -145,6 +147,8 @@ enum Row {
     Display,
     VSync,
     Api,
+    /// SWITCHES[i]
+    Switch(usize),
     Extra,
     Reset,
     Back,
@@ -156,6 +160,7 @@ impl Row {
         if settings::graphics_apis().len() > 1 {
             v.push(Row::Api);
         }
+        v.extend((0..settings::SWITCHES.len()).map(Row::Switch));
         v.extend([Row::Extra, Row::Reset, Row::Back]);
         v
     }
@@ -195,6 +200,8 @@ struct App {
     row_moved: bool,
     /// The extra switches box had the keyboard last frame.
     typed: bool,
+    /// The launch profile for the next Join (settings::PROFILES); back to Normal once a game starts.
+    profile: usize,
 }
 
 impl App {
@@ -239,6 +246,7 @@ impl App {
             row: 0,
             row_moved: false,
             typed: false,
+            profile: 0,
             cfg,
         };
         if !ready {
@@ -365,6 +373,7 @@ impl App {
         self.cfg.save();
         let remember = self.cfg.remember;
         let game_settings = self.cfg.game.clone();
+        let profile = self.profile;
         let known_lan = self.cfg.servers[self.cfg.server].lan.clone();
         self.busy = true;
         self.say(if create { "Creating your account…" } else { "Signing in…" }, false);
@@ -419,7 +428,10 @@ impl App {
                         format!("{}%", game_settings.volume)
                     }
                 ));
-                let env = game_settings.env(MUTE.load(std::sync::atomic::Ordering::Relaxed));
+                if profile != 0 {
+                    config::log(&format!("launch profile: {}", settings::PROFILES[profile].name));
+                }
+                let env = game_settings.env(MUTE.load(std::sync::atomic::Ordering::Relaxed), profile);
                 game::launch(&dir, &target, &sid, module.as_deref(), &env)
             })();
             let _ = tx.send(Msg::Started(r.map_err(|e| format!("{e:#}"))));
@@ -490,7 +502,11 @@ impl App {
                 self.busy = false;
                 self.making = None;
                 match r {
-                    Ok(()) => self.say("The game is running. Have fun!", false),
+                    Ok(()) => {
+                        // a profile is for one Join
+                        self.profile = 0;
+                        self.say("The game is running. Have fun!", false)
+                    }
                     Err(e) => {
                         config::log(&format!("join failed: {e}"));
                         self.say(e, true)
@@ -851,6 +867,11 @@ impl App {
         for n in navs {
             match n {
                 Nav::Menu => self.open_settings(),
+                // left and right pick the launch profile
+                Nav::Left | Nav::Right if !self.busy => {
+                    let len = settings::PROFILES.len();
+                    self.profile = (self.profile + if *n == Nav::Right { 1 } else { len - 1 }) % len;
+                }
                 // A joins once the name and password are in (a remembered sign-in)
                 Nav::Accept if !self.busy && !self.password.is_empty() && !self.cfg.username.trim().is_empty() => {
                     self.join(ctx, false)
@@ -946,10 +967,34 @@ impl App {
             if ui.add_enabled(!self.busy, egui::Button::new("Create Account")).on_hover_text("Make an account on this server with the name and password above").clicked() {
                 self.join(ctx, true);
             }
+            let names: Vec<&str> = settings::PROFILES.iter().map(|p| p.name).collect();
+            egui::ComboBox::from_id_salt("profile")
+                .selected_text(names[self.profile])
+                .show_ui(ui, |ui| {
+                    for (i, n) in names.iter().enumerate() {
+                        ui.selectable_value(&mut self.profile, i, *n);
+                    }
+                })
+                .response
+                .on_hover_text("Launch profile: switches for the next Join only (speed test runs)");
             if self.busy {
                 ui.spinner();
             }
         });
+        // what this Join will set, so a test run is never taken for a normal one
+        let mute = MUTE.load(std::sync::atomic::Ordering::Relaxed);
+        let on: Vec<String> =
+            self.cfg.game.shown(mute, self.profile).into_iter().filter(|s| !s.starts_with("XIVLEGACY_BUG_TAG=")).collect();
+        if self.profile != 0 || !on.is_empty() {
+            let p = &settings::PROFILES[self.profile];
+            let head = if self.profile != 0 { format!("{}, for this Join", p.name) } else { "This Join sets".to_string() };
+            let sets = format!("{head}: {}", if on.is_empty() { "nothing".into() } else { on.join("  ") });
+            ui.add(egui::Label::new(egui::RichText::new(sets).color(egui::Color32::from_rgb(240, 180, 80))).wrap());
+            if !p.tag.is_empty() {
+                let report = format!("Report this run in the game with Ctrl+F12 (or hold both sticks in): the chat line opens with \"!bug {} \".", p.tag);
+                ui.add(egui::Label::new(egui::RichText::new(report).weak()).wrap());
+            }
+        }
         if let Some((step, done, total)) = self.making {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(step.label()).strong());
@@ -962,7 +1007,7 @@ impl App {
         }
         if self.pads.connected() {
             ui.add_space(4.0);
-            ui.weak("Gamepad: A to Join, Start for Settings");
+            ui.weak("Gamepad: A to Join, left and right for the launch profile, Start for Settings");
         }
     }
 }
@@ -1004,7 +1049,8 @@ impl App {
                     (egui::Key::Escape, Nav::Back),
                 ] {
                     // taken, so the Enter that opens the text box doesn't also type into it
-                    if i.consume_key(egui::Modifiers::NONE, key) {
+                    // every press counts, even two in one frame
+                    for _ in 0..i.count_and_consume_key(egui::Modifiers::NONE, key) {
                         v.push(n);
                     }
                 }
@@ -1045,6 +1091,11 @@ impl App {
                 let all = [VSync::Game, VSync::On, VSync::Off];
                 let i = all.iter().position(|&v| v == g.vsync).unwrap_or(0);
                 g.vsync = all[cycle(i, all.len())];
+            }
+            Row::Switch(i) => {
+                let sw = &settings::SWITCHES[i];
+                let n = g.switch_index(sw);
+                g.set_switch(sw, cycle(n, sw.choices.len()));
             }
             Row::Api => {
                 let apis = settings::graphics_apis();
@@ -1093,6 +1144,10 @@ impl App {
                 VSync::Off => "Off",
             }
             .into(),
+            Row::Switch(i) => {
+                let sw = &settings::SWITCHES[i];
+                sw.choices[g.switch_index(sw)].0.into()
+            }
             Row::Api => settings::graphics_apis()
                 .iter()
                 .find(|a| a.0 == g.graphics_api)
@@ -1145,6 +1200,15 @@ impl App {
 
         egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
             for (i, &row) in rows.iter().enumerate() {
+                if row == Row::Switch(0) {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Test switches").strong());
+                    ui.weak(
+                        "Set only for the game this launcher starts. Left at the first choice, a switch is unset, \
+                         even if setx set it. A client that doesn't know a switch (a speed switch on a build \
+                         without it) just ignores it.",
+                    );
+                }
                 let selected = i == self.row;
                 let frame = egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
@@ -1233,6 +1297,14 @@ impl App {
                     label(ui, "Graphics API");
                     chooser(self, ui, row, true);
                 });
+            }
+            Row::Switch(i) => {
+                let sw = &settings::SWITCHES[i];
+                ui.horizontal(|ui| {
+                    label(ui, sw.name.trim_start_matches("XIVLEGACY_"));
+                    chooser(self, ui, row, true);
+                });
+                ui.weak(sw.help);
             }
             Row::Extra => {
                 label(ui, "Extra switches (advanced)");
