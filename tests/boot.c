@@ -797,6 +797,8 @@ static void control_thread(void* arg)
                 plat_sleep_ms((uint32_t)atoi(line + 6));
                 gt_unlock();
             }
+            else if (!strncmp(line, "par ", 4))
+                gt_set_parallel_main(atoi(line + 4)); /* par 0|1: the main loop beside the guest lock (XIVLEGACY_PARALLEL) */
             else if (!strncmp(line, "lag ", 4))
             {
                 static int args[3];

@@ -9,6 +9,7 @@
 #include "gthread.h"
 #include "gwin.h"
 #include "plat.h"
+#include "thunk.h"
 
 static RT_TLS GThread* t_self;
 static RT_TLS int t_held, t_urgent;
@@ -25,6 +26,23 @@ void gt_game_costs(uint64_t* wait_ns, uint64_t* read_ns, uint64_t* read_bytes)
 
 /* --- the guest lock: a FIFO ticket lock with a quantum ---------------------------------------- */
 static volatile uint32_t g_next_ticket, g_now_serving;
+/* Each ticket's turn word: a release wakes the next ticket's waiter only. Waking every parked thread
+ * at each release (a dozen sound and worker threads, each to look at its ticket and park again)
+ * made a thread that takes and gives up the lock in a tight loop expensive for all: on a Windows PC
+ * one such thread took it ~240,000 times a second, and the drawing thread's frame went from 50 to
+ * 110-140 ms (#29, #30). XIVLEGACY_LOCKWAKE=all: wake them all, as before. */
+#define TURN_SLOTS 64u
+static volatile uint32_t g_turn[TURN_SLOTS];
+static int g_wake_all = -1;
+static int wake_all(void)
+{
+    if (g_wake_all < 0)
+    {
+        const char* e = getenv("XIVLEGACY_LOCKWAKE");
+        g_wake_all = e && !strcmp(e, "all");
+    }
+    return g_wake_all;
+}
 /* How long a thread keeps the lock while others wait. The game thread (the one that called gt_init)
  * keeps it longest: each time it yields it waits out every other waiting thread's turn, which on
  * slow cores was 15% of its time with equal turns. In FFXIV 1.23b the thread that draws
@@ -97,8 +115,30 @@ uint64_t gt_last_read_ns(void) { return g_other_read; }
 
 /* XIVLEGACY_LOCKSTATS: every 2 s, per thread, how long it held the lock, waited for it, and how many
  * times it took it (who starves whom) */
+static RT_TLS uint32_t t_acq_shim; /* the shim this thread took the lock in ([lockhold]) */
 static uint32_t ls_tid[64];
 static uint64_t ls_wait[64], ls_hold[64], ls_n[64], ls_last;
+/* per thread, the shims it took the lock from most (thunk_current; 0: outside a shim, a loop's
+ * yield or a host thread), logged for threads that took it more than LS_BUSY times */
+#define LS_SHIMS 6
+#define LS_BUSY 20000u
+static uint32_t ls_shim[64][LS_SHIMS], ls_shim_n[64][LS_SHIMS];
+static void ls_note_shim(int slot)
+{
+    uint32_t s = thunk_current(), *a = ls_shim[slot], *n = ls_shim_n[slot];
+    int lo = 0;
+    for (int i = 0; i < LS_SHIMS; ++i)
+    {
+        if (a[i] == s && n[i])
+        {
+            n[i]++;
+            return;
+        }
+        if (n[i] < n[lo])
+            lo = i;
+    }
+    a[lo] = s, n[lo] = 1; /* replaces the least taken (a rough top list) */
+}
 static RT_TLS int ls_slot = -1;
 static RT_TLS uint64_t ls_t0;
 static void ls_note(int wait, uint64_t ns)
@@ -113,7 +153,7 @@ static void ls_note(int wait, uint64_t ns)
             if (plat_atomic_cas32(&ls_tid[i], 0, tid) == 0) { ls_slot = i; break; }
         if (ls_slot < 0) return;
     }
-    if (wait) ls_wait[ls_slot] += ns, ls_n[ls_slot]++; else ls_hold[ls_slot] += ns;
+    if (wait) ls_wait[ls_slot] += ns, ls_n[ls_slot]++, ls_note_shim(ls_slot); else ls_hold[ls_slot] += ns;
     uint64_t now = rt_monotonic_ns();
     if (!wait && now - ls_last > 2000000000ull)
     {
@@ -122,12 +162,30 @@ static void ls_note(int wait, uint64_t ns)
         for (int i = 0; i < 64 && o < 3900; ++i)
             if (ls_tid[i] && (ls_wait[i] > 20000000ull || ls_hold[i] > 20000000ull))
                 o += snprintf(line + o, sizeof line - o, " %u%s:w%.0f/h%.0f/n%llu", ls_tid[i], i == ls_slot ? "*" : "", ls_wait[i] * 1e-6, ls_hold[i] * 1e-6, (unsigned long long)ls_n[i]);
-        for (int i = 0; i < 64; ++i) ls_wait[i] = ls_hold[i] = ls_n[i] = 0;
         rt_log("%s\n", line);
+        for (int i = 0; i < 64; ++i)
+            if (ls_tid[i] && ls_n[i] > LS_BUSY)
+            {
+                o = snprintf(line, sizeof line, "[lockstats] %u took the lock %llu times, from:", ls_tid[i], (unsigned long long)ls_n[i]);
+                for (int k = 0; k < LS_SHIMS && o < 3900; ++k)
+                    if (ls_shim_n[i][k] > ls_n[i] / 100)
+                    {
+                        const char* nm = ls_shim[i][k] ? thunk_name(ls_shim[i][k]) : NULL;
+                        if (nm)
+                            o += snprintf(line + o, sizeof line - o, " %s %u", nm, ls_shim_n[i][k]);
+                        else if (ls_shim[i][k])
+                            o += snprintf(line + o, sizeof line - o, " stand-in %08x %u", ls_shim[i][k], ls_shim_n[i][k]);
+                        else
+                            o += snprintf(line + o, sizeof line - o, " (no shim: a yield or a host thread) %u", ls_shim_n[i][k]);
+                    }
+                rt_log("%s\n", line);
+            }
+        for (int i = 0; i < 64; ++i) ls_wait[i] = ls_hold[i] = ls_n[i] = 0;
+        memset(ls_shim_n, 0, sizeof ls_shim_n);
     }
 }
 
-void gt_lock(void)
+static void g_acquire(void)
 {
     ls_t0 = rt_monotonic_ns();
     uint64_t wait_t0 = game_now() ? rt_monotonic_ns() : 0;
@@ -150,6 +208,17 @@ void gt_lock(void)
             continue;
         }
         /* parked (woken by gt_unlock) until the holder's turn is up, then ask it to yield */
+        volatile uint32_t* word = &g_now_serving;
+        uint32_t seen = cur;
+        if (!wake_all())
+        {
+            /* this ticket's turn word, read before a last look at the ticket being served: a
+             * release serves the next ticket first and then bumps its word */
+            word = &g_turn[t % TURN_SLOTS];
+            seen = plat_atomic_add32(word, 0);
+            if (g_now_serving == t)
+                break;
+        }
         uint64_t now = rt_monotonic_ns(), end = g_deadline;
         if (now >= end || t_urgent)
         {
@@ -159,10 +228,10 @@ void gt_lock(void)
              * one request, a waiter could leave a thread running guest code with the lock for
              * seconds. */
             rt_lock_contended = 1;
-            plat_wait32_ms(&g_now_serving, cur, 1);
+            plat_wait32_ms(word, seen, 1);
         }
         else
-            plat_wait32_ms(&g_now_serving, cur, (uint32_t)((end - now + 999999) / 1000000));
+            plat_wait32_ms(word, seen, (uint32_t)((end - now + 999999) / 1000000));
     }
     if (flagged)
     {
@@ -172,6 +241,7 @@ void gt_lock(void)
     plat_atomic_add32(&g_waiters, (uint32_t)-1);
     t_held = 1;
     t_acquired = rt_monotonic_ns();
+    t_acq_shim = thunk_current();
     ls_note(1, t_acquired - ls_t0);
     if (wait_t0)
         g_game_wait_ns += t_acquired - wait_t0;
@@ -184,15 +254,214 @@ void gt_lock(void)
     rt_lock_contended = g_urgent > (t_urgent ? 1u : 0u);
 }
 
-void gt_unlock(void)
+/* XIVLEGACY_LOCKSTATS: a long hold (zone loads on Windows held it 7-14 s, #29), with the shim the
+ * thread took the lock in and the one it gives it up in; thunk.c logs a shim that ran long under it */
+static RT_TLS uint32_t t_releases;
+uint32_t gt_release_count(void) { return t_releases; }
+static int ls_on(void)
 {
+    static int on = -1;
+    if (on < 0)
+        on = getenv("XIVLEGACY_LOCKSTATS") != NULL;
+    return on;
+}
+
+static void g_release(void)
+{
+    t_releases++;
+    if (t_acquired && ls_on())
+    {
+        uint64_t held = rt_monotonic_ns() - t_acquired;
+        if (held > 250000000ull)
+        {
+            const char* a = t_acq_shim ? thunk_name(t_acq_shim) : NULL;
+            const char* r = thunk_current() ? thunk_name(thunk_current()) : NULL;
+            rt_log("[lockhold] thread %u%s held the guest lock %.0f ms: taken in %s, given up in %s\n", plat_thread_id(),
+                game_now() ? " (drawing)" : t_main ? " (main loop)" : "", held * 1e-6, a ? a : t_acq_shim ? "a stand-in" : "no shim",
+                r ? r : thunk_current() ? "a stand-in" : "no shim (a loop's yield)");
+        }
+    }
     if (t_acquired) ls_note(0, rt_monotonic_ns() - t_acquired);
     if (!game_now() && t_acquired)
         g_other_held_ns += rt_monotonic_ns() - t_acquired; /* still held: no other writer */
     t_held = 0;
-    plat_atomic_add32(&g_now_serving, 1);
-    if (g_waiters)
-        plat_wake_all32(&g_now_serving);
+    uint32_t next = plat_atomic_add32(&g_now_serving, 1) + 1;
+    if (wake_all())
+    {
+        if (g_waiters)
+            plat_wake_all32(&g_now_serving);
+    }
+    else
+    {
+        plat_atomic_add32(&g_turn[next % TURN_SLOTS], 1);
+        if (g_waiters)
+            plat_wake_all32(&g_turn[next % TURN_SLOTS]);
+    }
+}
+
+/* --- XIVLEGACY_PARALLEL: the main loop beside the guest lock ---------------------------------
+ * On Windows the game's main loop (input, the camera's controls, game logic) and its drawing thread
+ * ran at once. With XIVLEGACY_PARALLEL=1 the main loop runs translated code without the guest
+ * lock, beside whichever thread holds it; every other thread keeps sharing the guest lock as before.
+ * What the guest lock protected splits in two:
+ *  - the runtime's own state (heap, handles, windows and messages, critical sections, sockets,
+ *    d3d9): the runtime lock, held by any thread while it runs a shim (thunk_dispatch) or other
+ *    runtime code, never while it runs translated code, so it is held for microseconds;
+ *  - the game's own data: the game's own synchronization, as on Windows (critical sections,
+ *    Interlocked*, locked instructions, which guest.h makes atomic).
+ * Lock order: the guest lock, then the runtime lock. A thread that holds the guest lock and runs
+ * runtime code holds both; gt_lock/gt_unlock (a shim's blocking section, a host thread) take and
+ * give up both. What this does not give the guest is x86's store ordering between the two threads
+ * (docs/PARALLEL.md). */
+static int g_par = -1;
+static RT_TLS int t_par;   /* this thread runs translated code without the guest lock */
+static RT_TLS int t_rt;    /* this thread holds the runtime lock */
+static RT_TLS int t_guest; /* this thread is running translated code (not runtime code) */
+static volatile uint32_t g_rt; /* 0 free, 1 held, 2 held and waited for */
+
+int gt_parallel(void)
+{
+    if (g_par < 0)
+    {
+        const char* e = getenv("XIVLEGACY_PARALLEL");
+        g_par = e && *e == '1';
+    }
+    return g_par;
+}
+
+/* the runtime lock's waits: the drawing thread's, the others' (XIVLEGACY_FRAMESTATS) */
+static volatile uint64_t g_rt_wait_game, g_rt_wait_other, g_rt_takes_game;
+void gt_rt_costs(uint64_t* game_wait_ns, uint64_t* other_wait_ns, uint64_t* game_takes)
+{
+    *game_wait_ns = g_rt_wait_game, *other_wait_ns = g_rt_wait_other, *game_takes = g_rt_takes_game;
+}
+
+static void rt_take(void)
+{
+    uint64_t t0 = 0;
+    if (game_now())
+        g_rt_takes_game++;
+    for (unsigned spin = 0;; ++spin)
+    {
+        uint32_t v = g_rt;
+        if (v == 0 && plat_atomic_cas32(&g_rt, 0, 1) == 0)
+            break;
+        if (!t0)
+            t0 = rt_monotonic_ns();
+        if (spin < 200)
+        {
+            cpu_relax();
+            continue;
+        }
+        if (v == 2 || plat_atomic_cas32(&g_rt, 1, 2) == 1)
+            plat_wait32(&g_rt, 2);
+        if (plat_atomic_cas32(&g_rt, 0, 2) == 0)
+            break; /* taken, still marked waited for: the release wakes the others */
+    }
+    if (t0)
+    {
+        uint64_t w = rt_monotonic_ns() - t0;
+        if (game_now())
+            g_rt_wait_game += w;
+        else
+            g_rt_wait_other += w; /* approximate: racy between waiters */
+    }
+    t_rt = 1;
+}
+
+static void rt_drop(void)
+{
+    t_rt = 0;
+    if (plat_atomic_add32(&g_rt, (uint32_t)-1) != 1)
+    {
+        g_rt = 0;
+        plat_wake_all32(&g_rt);
+    }
+}
+
+void gt_lock(void)
+{
+    if (!t_par)
+        g_acquire();
+    if (g_par > 0 && !t_guest && !t_rt)
+        rt_take();
+}
+
+void gt_unlock(void)
+{
+    if (t_rt)
+        rt_drop();
+    if (!t_par)
+        g_release();
+}
+
+static volatile int g_par_main = 1;
+void gt_set_parallel_main(int on) { g_par_main = on != 0; }
+static void go_parallel(void);
+
+unsigned gt_shim_enter(void)
+{
+    if (t_main && t_guest && !t_rt && t_par != g_par_main)
+    {
+        /* switched between shims, where the main loop's thread holds neither lock (or only the guest lock) */
+        if (g_par_main)
+            go_parallel();
+        else
+        {
+            t_par = 0;
+            if (t_self)
+                t_self->par = 0;
+            g_acquire();
+        }
+    }
+    unsigned saved = (unsigned)t_guest | (unsigned)t_rt << 1;
+    t_guest = 0;
+    if (!t_rt)
+        rt_take();
+    return saved;
+}
+
+void gt_shim_leave(unsigned saved)
+{
+    if (!(saved & 2) && t_rt)
+        rt_drop();
+    t_guest = (int)(saved & 1);
+}
+
+int gt_beside(void) { return t_par; }
+
+/* a device call on the thread beside the guest lock: Direct3D's device is the guest lock group's */
+void gt_device_enter(void)
+{
+    g_acquire();
+    rt_take();
+}
+
+void gt_device_leave(void)
+{
+    rt_drop();
+    g_release();
+}
+
+void gt_guest_begin(void)
+{
+    if (t_rt)
+        rt_drop();
+    t_guest = 1;
+}
+
+/* the main loop's thread, once it is known (gt_mark_main_thread), in a shim: it gives up the guest
+ * lock for good */
+static void go_parallel(void)
+{
+    if (t_par)
+        return;
+    t_par = 1;
+    if (t_self)
+        t_self->par = 1;
+    if (t_held)
+        g_release();
+    rt_log("[gthread] main loop thread %u runs beside the guest lock (XIVLEGACY_PARALLEL)\n", plat_thread_id());
 }
 
 void gt_lock_urgent(void)
@@ -209,6 +478,8 @@ void gt_mark_main_thread(void)
 {
     t_main = 1;
     plat_thread_interactive();
+    if (gt_parallel())
+        go_parallel();
 }
 
 void gt_set_loading(int on) { g_loading = on != 0; }
@@ -221,13 +492,15 @@ unsigned gt_waiting(void)
 
 int gt_holds(void)
 {
-    return t_held;
+    return t_par ? t_rt : t_held;
 }
 
 /* Called at a loop's back edge once a waiter has asked (gt_lock). The clock check covers a request
  * raised against the previous holder's turn. */
 static void yield_if_due(void)
 {
+    if (t_par)
+        return; /* the request is the guest lock holder's */
     if (!t_held || !g_waiters || (!g_urgent && rt_monotonic_ns() < g_deadline))
     {
         rt_lock_contended = 0; /* a waiter asks again when this turn is up */
@@ -239,6 +512,7 @@ static void yield_if_due(void)
 
 void gt_init(void)
 {
+    gt_parallel();
     t_quantum_ns = GAME_QUANTUM_NS;
     t_game = 1;
     rt_set_yield(yield_if_due);
@@ -304,7 +578,8 @@ void gt_exit_self(void)
     GThread* t = t_self;
     if (!t)
         return;
-    int took = !t_held;
+    t_guest = 0; /* ExitThread may have jumped out of translated code */
+    int took = !gt_holds();
     if (took)
         gt_lock();
     gwin_release(t->stack_lo);
@@ -333,13 +608,17 @@ void gt_mark_game_thread(void)
 void gt_fiber_leave(void)
 {
     t_held = 0;
+    t_rt = 0; /* passed on held, with the guest lock */
     t_self = NULL;
 }
 
 void gt_fiber_enter(GThread* t, int game)
 {
     t_self = t;
-    t_held = 1;
+    t_par = t->par;
+    t_held = !t_par;
+    t_rt = g_par > 0; /* inside SwitchToFiber's shim, or about to start the fiber (gt_guest_begin) */
+    t_guest = 0;
     t_game = game;
     t_quantum_ns = game ? GAME_QUANTUM_NS : 0;
     t_drawer = game ? g_drawer_gen : 0;
@@ -376,7 +655,7 @@ uint32_t guest_thiscall(uint32_t fn, uint32_t self, unsigned nargs, const uint32
 
 static uint32_t call_with(uint32_t fn, int has_self, uint32_t self, unsigned nargs, const uint32_t* args)
 {
-    int took = !t_held;
+    int took = t_par ? (g_par > 0 && !t_guest && !t_rt) : !t_held;
     if (took)
         gt_lock();
     GThread* t = gt_self();
@@ -396,7 +675,14 @@ static uint32_t call_with(uint32_t fn, int has_self, uint32_t self, unsigned nar
         g->ecx = self;
     /* any guest function pointer: a translation, or a thunk to a shim (a method of one of our own
      * COM objects, say) - exactly as guest code's own indirect calls resolve */
+    int was_guest = t_guest, had_rt = t_rt;
+    if (had_rt)
+        rt_drop();
+    t_guest = 1;
     rt_call_indirect(g, fn);
+    t_guest = was_guest;
+    if (had_rt)
+        rt_take();
     uint32_t eax = g->eax;
     uint16_t fcw = g->fcw;
     *g = saved;

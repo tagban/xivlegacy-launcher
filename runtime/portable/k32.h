@@ -40,6 +40,9 @@ void xiv_loading_poll(void);   /* xiv_misc.c: each frame, on the drawing thread 
 extern uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
 /* Sleep's wait, without the guest lock: nonzero when it waited (instead of sleeping ms) */
 extern int (*k32_sleep_wait)(uint32_t site, uint32_t ms);
+/* A zero-time yield (Sleep(0), SleepEx(0), SwitchToThread), called without the guest lock: a thread
+ * that keeps yielding naps instead (k32.c). */
+void k32_spin_yield(void);
 /* xiv_misc.c: the drawing thread presented a frame (frame pacing); its switch for tests */
 void xiv_pace_frame(void);
 void xiv_set_pace(int on);

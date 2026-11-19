@@ -121,6 +121,8 @@ covers the display only at the display's own size, or with `XIVLEGACY_FULLSCREEN
 | `XIVLEGACY_CASTCHECK=1` | as each drain starts, the game's own `dynamic_cast<CharaActor>` of every queued actor compared with its RTTI (`[actors] dynamic_cast...` on a mismatch) |
 | `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
 | `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal (`XIVLEGACY_NOAUDIO=0` keeps the sound) |
+| `XIVLEGACY_PARALLEL=1` | the main loop runs beside the guest lock, as on Windows (experimental: `docs/PARALLEL.md`); control FIFO `par 0`/`par 1` switches it, `mark <text>` logs a marker |
+| `XIVLEGACY_SHIMCOUNT=1` | calls per shim every 5 s, the drawing thread's and the others' |
 | `XIVLEGACY_VOLUME=<0-100>`, `XIVLEGACY_VSYNC=0` / `1`, `XIVLEGACY_FULLSCREEN=1` | the sound's loudness; VSync over the game's choice; the game's full-screen window covers the display (Settings) |
 | `XIVLEGACY_BUG_TAG=<words>` | the bug-report chat line opens with `!bug <words> ` instead of `!bug ` (launch profiles set `speed A`-`speed G`) |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |

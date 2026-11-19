@@ -15,11 +15,108 @@ const char plat_path_sep = '\\';
 #ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
 #define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
 #endif
+/* The cores with the largest L3 (#29). On a CPU whose L3 groups differ in size (Ryzen X3D: one CCD
+ * has the 3D V-Cache, the other the higher clock) Windows tends to leave the game on the frequency
+ * CCD, and the translated game (tens of MB of code, ~340M instructions a frame) runs 13% faster on
+ * the V-Cache one (7950X3D: 17.2 -> 19.5 fps). So the process prefers those cores through CPU Sets:
+ * soft, unlike an affinity mask, so Windows can still use the others when these are busy. Nothing
+ * happens when every L3 is the same size (Intel, one-CCD Ryzen, a 7950X without V-Cache).
+ * XIVLEGACY_CPUSETS=0: no steering; =threads: only the drawing thread and the main loop (the
+ * process default stays Windows'). */
+static ULONG g_cache_sets[256];
+static ULONG g_cache_nsets;
+static int g_cache_threads_only;
+
+static void cache_steer(void)
+{
+    const char* e = getenv("XIVLEGACY_CPUSETS");
+    if (e && e[0] == '0')
+    {
+        printf("[host] cpu sets: off (XIVLEGACY_CPUSETS=0)\n");
+        return;
+    }
+    g_cache_threads_only = e && (e[0] == 't' || e[0] == 'T');
+    /* every L3 and the logical processors under it */
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationCache, NULL, &len);
+    if (!len)
+        return;
+    char* buf = (char*)malloc(len);
+    if (!buf || !GetLogicalProcessorInformationEx(RelationCache, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len))
+    {
+        free(buf);
+        return;
+    }
+    DWORD lo = 0xFFFFFFFFu, hi = 0;
+    int n3 = 0;
+    for (DWORD off = 0; off < len;)
+    {
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX x = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)(buf + off);
+        if (x->Relationship == RelationCache && x->Cache.Level == 3)
+        {
+            ++n3;
+            if (x->Cache.CacheSize < lo)
+                lo = x->Cache.CacheSize;
+            if (x->Cache.CacheSize > hi)
+                hi = x->Cache.CacheSize;
+        }
+        off += x->Size;
+    }
+    if (n3 < 2 || lo == hi)
+    {
+        printf("[host] cpu sets: not steered (%d L3 cache%s of %lu KB)\n", n3, n3 == 1 ? "" : "s", (unsigned long)(hi >> 10));
+        free(buf);
+        return;
+    }
+    /* the CPU sets of the logical processors under the largest L3(s) */
+    ULONG clen = 0;
+    GetSystemCpuSetInformation(NULL, 0, &clen, GetCurrentProcess(), 0);
+    char* cbuf = clen ? (char*)malloc(clen) : NULL;
+    if (!cbuf || !GetSystemCpuSetInformation((PSYSTEM_CPU_SET_INFORMATION)cbuf, clen, &clen, GetCurrentProcess(), 0))
+    {
+        free(cbuf);
+        free(buf);
+        return;
+    }
+    for (ULONG coff = 0; coff < clen;)
+    {
+        PSYSTEM_CPU_SET_INFORMATION c = (PSYSTEM_CPU_SET_INFORMATION)(cbuf + coff);
+        if (c->Type == CpuSetInformation)
+        {
+            for (DWORD off = 0; off < len;)
+            {
+                PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX x = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)(buf + off);
+                if (x->Relationship == RelationCache && x->Cache.Level == 3 && x->Cache.CacheSize == hi &&
+                    x->Cache.GroupMask.Group == c->CpuSet.Group && c->CpuSet.LogicalProcessorIndex < 64 &&
+                    (x->Cache.GroupMask.Mask >> c->CpuSet.LogicalProcessorIndex & 1) &&
+                    g_cache_nsets < sizeof g_cache_sets / sizeof g_cache_sets[0])
+                {
+                    g_cache_sets[g_cache_nsets++] = c->CpuSet.Id;
+                    break;
+                }
+                off += x->Size;
+            }
+        }
+        coff += c->Size;
+    }
+    free(cbuf);
+    free(buf);
+    if (!g_cache_nsets)
+        return;
+    int ok = g_cache_threads_only ? 1 : SetProcessDefaultCpuSets(GetCurrentProcess(), g_cache_sets, g_cache_nsets);
+    printf("[host] cpu sets: %s prefer%s the %lu logical processors under the largest L3 (%lu KB; smallest %lu KB)%s\n",
+        g_cache_threads_only ? "the drawing thread and main loop" : "the process", g_cache_threads_only ? "" : "s",
+        (unsigned long)g_cache_nsets, (unsigned long)(hi >> 10), (unsigned long)(lo >> 10), ok ? "" : " - failed");
+    if (!ok)
+        g_cache_nsets = 0;
+}
+
 void plat_no_throttling(void)
 {
     PROCESS_POWER_THROTTLING_STATE p = { PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0 };
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &p, sizeof p);
+    cache_steer();
 }
 
 static void thread_no_throttling(void)
@@ -80,6 +177,8 @@ static DWORD WINAPI thread_entry(LPVOID p)
 void plat_thread_interactive(void)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    if (g_cache_threads_only && g_cache_nsets)
+        SetThreadSelectedCpuSets(GetCurrentThread(), g_cache_sets, g_cache_nsets);
 }
 
 int plat_thread_start(void (*fn)(void*), void* arg)
@@ -152,6 +251,24 @@ void plat_sleep_ms(uint32_t ms)
         }
     }
     Sleep(ms);
+}
+
+void plat_sleep_us(uint32_t us)
+{
+    if (!t_sleep_timer)
+    {
+        t_sleep_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!t_sleep_timer)
+            t_sleep_timer = INVALID_HANDLE_VALUE;
+    }
+    if (t_sleep_timer != INVALID_HANDLE_VALUE)
+    {
+        LARGE_INTEGER due;
+        due.QuadPart = -(LONGLONG)us * 10; /* relative, in 100 ns units */
+        if (SetWaitableTimer(t_sleep_timer, &due, 0, NULL, NULL, FALSE) && WaitForSingleObject(t_sleep_timer, INFINITE) == WAIT_OBJECT_0)
+            return;
+    }
+    Sleep(us >= 1000 ? us / 1000 : 1);
 }
 
 void plat_yield(void)

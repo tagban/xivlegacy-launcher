@@ -48,10 +48,16 @@ for the report. A switch this client does not know is ignored, so an older clien
 | `XIVLEGACY_WAITPROF=1` | every 2 s: frames, and where the drawing thread spent its time per import (`[waitprof]`, `API time`). On a Mac at the title screen: 120 frames, Sleep ~650 ms, Present ~60 ms, timeGetTime ~800k calls |
 | `XIVLEGACY_WGPU_BACKEND=dx12` / `vulkan` | which API wgpu drives (default: wgpu's pick, Vulkan on most PCs) |
 | `XIVLEGACY_WGPU_PRESENT=fifo` / `mailbox` / `immediate` | present mode (vsync or not) |
-| `XIVLEGACY_WGPU_STATS=1` | per-frame wgpu costs (passes, uploads) |
+| `XIVLEGACY_WGPU_STATS=1` | per-frame wgpu costs (passes and what ended them, uploads, static buffers made) |
 | `XIVLEGACY_NOAUDIO=1` | no audio device (to tell audio stalls from graphics ones); Settings' Sound Off sets it |
 | `XIVLEGACY_VSYNC=0` / `1` | VSync over the game's choice, any back end; Settings' VSync sets it |
 | `XIVLEGACY_STOCK=1` (launcher) | start the 2010 ffxivgame.exe instead of our client |
+| `XIVLEGACY_CPUSETS=0` / `threads` | on a CPU whose L3 caches differ in size (Ryzen X3D) the process prefers the cores under the largest one (CPU Sets; logged as `[host] cpu sets`). `0`: Windows' choice; `threads`: only the drawing thread and the main loop |
+| `XIVLEGACY_NOPBUF=1` | every draw copies its vertices and indices into the frame's upload ring again (default: buffers the game made without `D3DUSAGE_DYNAMIC` are kept on the GPU and drawn from) |
+| `XIVLEGACY_PARALLEL=1` | the main loop runs beside the guest lock (`docs/PARALLEL.md`) |
+| `XIVLEGACY_LOCKWAKE=all` | each release of the guest lock wakes every waiting thread, as before (default: only the next in line) |
+| `XIVLEGACY_SPINNAP=0` | zero-time yields (`Sleep(0)`, `SleepEx(0)`, `SwitchToThread`) never nap (default: a thread that keeps yielding naps 1 ms, 0.2 ms while loading) |
+| `XIVLEGACY_LOCKSTATS=1` | every 2 s, per thread: guest lock waited/held/taken; for a thread that took it over 20,000 times, the shims it took it from; `[lockhold]` for a hold over 250 ms or a shim that kept it over 50 ms |
 
 Audio: `[xaudio2] N of M passes late (the device ran dry)` counts the times the engine fed the
 device late; `voice passes short of data` the times the game fed its voices late. The engine
