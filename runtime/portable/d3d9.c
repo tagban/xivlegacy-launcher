@@ -46,6 +46,7 @@ void d3d9_motion_tick(void)
 }
 #include "gwin.h"
 #include "k32.h"
+#include "input.h"
 #include "plat.h"
 #include "thunk.h"
 #include "user32.h"
@@ -1761,8 +1762,10 @@ static void present(void)
             static uint64_t last_dn, last_pn, last_tk, last_np;
             uint64_t tk, np;
             xiv_pace_costs(&tk, &np);
-            rt_log("[d3d9] pacing: drawer waited %.2f ms a frame for the main loop's tick, napped %.2f ms a frame (loading or answering a tap)\n",
-                (tk - last_tk) / 60e6, (np - last_np) / 60e6);
+            uint32_t tap_id;
+            uint64_t tap = input_last_tap_ns(&tap_id);
+            rt_log("[d3d9] pacing: drawer waited %.2f ms a frame for the main loop's tick, napped %.2f ms a frame (loading or answering a tap); last tap %05x %.1f s ago\n",
+                (tk - last_tk) / 60e6, (np - last_np) / 60e6, tap_id, tap ? (now - tap) * 1e-9 : -1.0);
             last_tk = tk, last_np = np;
             rt_log("[d3d9] frames %llu-%llu: %.1f fps, %.1f draws, %.1f clears a frame, main loop %.1f/s; renderer %.2f ms draws + %.2f ms present a frame\n",
                 (unsigned long long)g_dev->frames - 59, (unsigned long long)g_dev->frames, last_ns ? 60e9 / (double)(now - last_ns) : 0.0,
