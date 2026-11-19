@@ -470,6 +470,10 @@ mod tests {
             pairs(&[("XIVLEGACY_BUG_TAG", "speed B"), ("XIVLEGACY_FRAMESTATS", "1"), ("XIVLEGACY_PARALLEL", "1")])
         );
         assert_eq!(g.shown(false, b), vec!["XIVLEGACY_BUG_TAG=speed B", "XIVLEGACY_FRAMESTATS=1", "XIVLEGACY_PARALLEL=1"]);
+        // a profile wins over Settings: FRAMESTATS Off (unset) still comes out on
+        let fs = SWITCHES.iter().find(|s| s.name == "XIVLEGACY_FRAMESTATS").unwrap();
+        g.set_switch(fs, 0);
+        assert_eq!(resolve(&g.env(false, b)).get("XIVLEGACY_FRAMESTATS"), Some(&Some("1".to_string())));
         // the extra box still wins
         g.extra_env = "XIVLEGACY_PARALLEL=".into();
         assert_eq!(resolve(&g.env(false, b)).get("XIVLEGACY_PARALLEL"), Some(&None));
