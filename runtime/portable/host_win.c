@@ -14,6 +14,7 @@
 
 #include "plat.h"
 #include "runtime.h"
+#include "thunk.h"
 #include "xiv_boot.h"
 
 static LONG WINAPI on_crash(EXCEPTION_POINTERS* e)
@@ -149,7 +150,7 @@ typedef struct
     DWORD tid;
     uint32_t n;
     char where[64]; /* "f_00dd58b0_r" or a module name */
-    char from[64];  /* the nearest caller in our code, or "" */
+    char from[128]; /* the import the game called and its call site, and the nearest caller in our code */
 } ProfHit;
 
 enum { PROF_HASH = 1 << 16 };
@@ -334,7 +335,7 @@ static DWORD WINAPI profiler_thread(LPVOID arg)
             if (t >= 256)
                 continue;
             tcount[t]++;
-            char where[64], from[64] = "";
+            char where[64], from[128] = "", caller[64] = "";
             int ours = prof_guest_of(pc, lo, hi) != 0 || (pc >= hlo && pc < hhi);
             if (prof_guest_of(pc, lo, hi))
                 tours[t]++;
@@ -347,10 +348,19 @@ static DWORD WINAPI profiler_thread(LPVOID arg)
                     memcpy(&v, stack + o, 8);
                     if (prof_is_ret(v, lo, hi) || prof_is_ret(v, hlo, hhi))
                     {
-                        prof_name_ours(v, lo, hi, from, sizeof from);
+                        prof_name_ours(v, lo, hi, caller, sizeof caller);
                         break;
                     }
                 }
+            /* outside translated code inside a shim: which import the game called, and from where */
+            uint32_t site = 0, shim = prof_guest_of(pc, lo, hi) ? 0 : thunk_current_of(te.th32ThreadID, &site);
+            const char* sn = shim ? thunk_name(shim) : NULL;
+            if (sn)
+                snprintf(from, sizeof from, "%s (game %08x)%s%s", sn, site, caller[0] ? " via " : "", caller);
+            else if (shim)
+                snprintf(from, sizeof from, "stand-in %08x (game %08x)%s%s", shim, site, caller[0] ? " via " : "", caller);
+            else
+                snprintf(from, sizeof from, "%s", caller);
             ProfHit* s = prof_slot(te.th32ThreadID, where, from);
             if (s)
                 s->n++;
