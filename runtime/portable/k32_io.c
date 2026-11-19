@@ -15,6 +15,7 @@
 #include "xiv_ctimer.h"
 #include "xiv_logtabs.h"
 #include "xiv_monster_moves.h"
+#include "xiv_monster_points.h"
 #include "xiv_notice.h"
 
 #define INVALID_HANDLE 0xFFFFFFFFu
@@ -212,6 +213,8 @@ static void sh_CreateFileA(Guest* g)
     {
         char alt[1400];
         if (xiv_ctimer_redirect(ARGS(0), host, alt, sizeof alt))
+            memcpy(host, alt, sizeof host);
+        else if (xiv_monster_points_redirect(ARGS(0), host, alt, sizeof alt))
             memcpy(host, alt, sizeof host);
     }
     PlatStat st;

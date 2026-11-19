@@ -30,7 +30,15 @@ const HEADERS: [(&str, &str); 6] = [
     ("xiv_game.h", include_str!("../../../runtime/xiv_game.h")),
     ("xiv_module.c", include_str!("../../../runtime/xiv_module.c")),
 ];
-const HOOKS: [(&str, u64); 2] = [("streamlog", 0x4e7290), ("replace_lua_protected", 0xdcf140)];
+/// Every `rt_hook_<name>` that xiv_module.c names, at the guest address the
+/// translation hooks (docs/NATIVE_CLIENT.md has the same list for build.py).
+/// The module only links when each one is here.
+const HOOKS: [(&str, u64); 4] = [
+    ("streamlog", 0x4e7290),
+    ("replace_lua_protected", 0xdcf140),
+    ("actor_lookup", 0x610d55),
+    ("camera_follow", 0x6163a6),
+];
 
 #[cfg(target_os = "macos")]
 const EXT: &str = "dylib";
@@ -97,6 +105,10 @@ pub fn module_path(game_dir: &Path) -> Result<PathBuf> {
         h.update(text.as_bytes());
     }
     h.update(env!("CARGO_PKG_VERSION").as_bytes()); // the recompiler ships with the launcher
+    for (name, addr) in HOOKS {
+        h.update(name.as_bytes());
+        h.update(addr.to_le_bytes());
+    }
     for flag in cflags() {
         h.update(flag.as_bytes()); // the guest window's base among them
     }
@@ -320,4 +332,25 @@ fn zig(progress: &(dyn Fn(Step, usize, usize) + Sync)) -> Result<PathBuf> {
     let _ = std::fs::remove_dir_all(&unpack);
     let _ = std::fs::remove_file(&archive);
     Ok(exe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// xiv_module.c refers to each hook it lists, so a hook missing from
+    /// HOOKS fails the link on the player's computer.
+    #[test]
+    fn hooks_cover_the_module() {
+        let module = HEADERS.iter().find(|(n, _)| *n == "xiv_module.c").unwrap().1;
+        let named: Vec<&str> = module
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("extern GuestFn rt_hook_"))
+            .map(|r| r.trim_end_matches(';').trim())
+            .collect();
+        assert!(!named.is_empty());
+        for name in named {
+            assert!(HOOKS.iter().any(|(n, _)| *n == name), "HOOKS lacks {name}");
+        }
+    }
 }

@@ -45,6 +45,11 @@
       "va": "0x00611372",
       "bytes": "0F1F40000F2F05BC70FB00",
       "why": "the camera distance setter (0x611350) clamps to 1.5..10: its upper test is cvtps2pd + comisd against a double 10.0 at 0xF67848 that other code shares, then it loads the float limit at 0xFB70BC. Compare against that float limit itself (nop; comiss xmm0, [0xFB70BC], its address where the old one was), so Monster Mode can scale the limit for a big body (xiv_monster_cam.c) and the test follows it."
+    },
+    {
+      "va": "0x00616F93",
+      "bytes": "8BCEE8969DFFFF85C07522EB1C90909090909090909090909090909090909090909090909090909090",
+      "why": "the camera's 'no lock target' test (0x616F90, asked by SetContext 0x618650 and the camera update at 0x619BC2) inlines the lock target lookup of 0x610D30 (the world's +0x70 TargetActor, its id at +0x134, found in the world's id map). 0x610D30 is checked by the actor_lookup hook (anything but a live CharaActor is not found); this copy wasn't. Its id is 0xC0000000 when nothing is locked, and the map can hold a BgObjActor or WeaponActor under that id, so the test said a target was locked, the camera went into a lock context, and that context's own (checked) lookup found nothing: it skipped its update every frame and the camera stayed where it was while the player ran on (Windows 0.1.26, Ul'dah). Call 0x610D30 instead (mov ecx, esi; call; test eax, eax; jne 0x616FC0; jmp 0x616FBC; nops), so both ask the same checked lookup."
     }
   ]
 }

@@ -465,7 +465,12 @@ static void id_map_check(uint32_t p, uint32_t size, uint32_t esp)
  * !goto to Gegeissa, whose frames before the crash were black (the camera aimed from that object).
  * The id was 0xC0000000, the game's "no actor" id (what a warp leaves as the lock target), under which
  * the map also holds local actors without a server id (WeaponActor, BgObjActor). The recompiler's hook at 0x610D55 (test eax, eax, right after the find) checks what it found:
- * anything but a whole, live CharaActor is not found. */
+ * anything but a whole, live CharaActor is not found.
+ * The camera's "no lock target" test 0x616F90 (SetContext 0x618650 picks a lock context when it's
+ * false) had its own inlined copy of this lookup, unchecked: it found the BgObjActor, so the camera
+ * went into a lock context whose checked lookup found nothing, and the camera stopped while the
+ * player ran on (Windows 0.1.26). patches.json makes 0x616F90 call 0x610D30, so this check covers
+ * both. */
 static const uint8_t LOOKUP_CODE[] = { 0x8D, 0x88, 0xA4, 0x00, 0x00, 0x00, 0xE8 }; /* 0x610D4A: lea ecx, [eax + 0xa4]; call */
 
 void xcl_actor_lookup(Guest* g)
@@ -477,7 +482,10 @@ void xcl_actor_lookup(Guest* g)
         code = g_rdata_hi && in_text(0x610D4Au);
         for (uint32_t i = 0; code && i < sizeof LOOKUP_CODE; ++i)
             code = rd8(0x610D4Au + i) == LOOKUP_CODE[i];
+        const char* off = getenv("XIVLEGACY_ACTORLOOKUP"); /* =0: leave the game's lookups alone (to rule this check out) */
         const char* m = code ? "[actors] id lookup check on\n" : "[actors] id lookup check off: not the 1.23b code\n";
+        if (code && off && *off == '0')
+            code = 0, m = "[actors] id lookup check off (XIVLEGACY_ACTORLOOKUP=0)\n";
         (void)!write(2, m, strlen(m));
     }
     uint32_t a = g->eax;
