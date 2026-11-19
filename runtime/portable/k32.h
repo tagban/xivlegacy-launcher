@@ -40,8 +40,13 @@ void xiv_loading_poll(void);   /* xiv_misc.c: each frame, on the drawing thread 
 extern uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
 /* Sleep's wait, without the guest lock: nonzero when it waited (instead of sleeping ms) */
 extern int (*k32_sleep_wait)(uint32_t site, uint32_t ms);
+/* A zero-time yield (Sleep(0), SleepEx(0), SwitchToThread), called without the guest lock: a thread
+ * that keeps yielding naps instead (k32.c). */
+void k32_spin_yield(void);
 /* xiv_misc.c: the drawing thread presented a frame (frame pacing); its switch for tests */
 void xiv_pace_frame(void);
+/* the drawing thread's total time waiting for the main loop's tick, and napping while loading */
+void xiv_pace_costs(uint64_t* tick_ns, uint64_t* nap_ns);
 void xiv_set_pace(int on);
 /* d3d9.c: Direct3D 9 (in progress). */
 void d3d9_init(void);

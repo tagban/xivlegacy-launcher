@@ -54,6 +54,48 @@ connection.
 The title screen logs in to the lobby by itself; Start opens "A Word to Our Players", whose default
 button is No.
 
+## Settings and muted test clients
+
+The launcher's Settings screen (the footer's Settings…, or Start on a gamepad) is applied at each
+Join, through what the game and the client already read:
+
+| Setting | How it reaches the game |
+|---|---|
+| Resolution; Window, Borderless window | the game's own `Documents\My Games\FINAL FANTASY XIV\config.sys` (below) |
+| Full screen | config.sys's full-screen flag plus `XIVLEGACY_FULLSCREEN=1`: the frameless window covers the display at any resolution, the picture scaled; the display's mode is never changed |
+| Sound off | `XIVLEGACY_NOAUDIO=1`: no audio device; the engine runs on the clock, so the game behaves the same |
+| Volume | `XIVLEGACY_VOLUME=0`-`100`: the gain of the client's one output stream |
+| VSync | `XIVLEGACY_VSYNC=0` / `1`, over the game's own present interval (Metal and wgpu) |
+| Graphics API (Windows, Linux) | `XIVLEGACY_WGPU_BACKEND` |
+| Test switches | one row each for `FRAMESTATS`, `WGPU_STATS`, `WGPU_PRESENT`, `MONSTERCAM`, `ACTORLOOKUP` and the speed-test switches `PARALLEL`, `CPUSETS`, `NOPBUF`, `SPINNAP`, `LOCKWAKE` (all `XIVLEGACY_`); the first choice of each unsets the variable for the game, even one set with `setx`. A switch a client does not know is ignored |
+| Extra switches | any `NAME=value` lines, set for the game after the ones above; `NAME=` clears one set with `setx`. `set`, `setx` and `export` lines are taken as they are |
+
+The launcher logs what it set (`settings:` and `game switches:` in launcher.log). Sound On unsets
+`XIVLEGACY_NOAUDIO` (the client mutes on any value but `0`, so a value left by `setx` is cleared).
+
+**Launch profiles.** The drop-down beside Join (left and right on a gamepad) picks switches for the
+next Join only; it goes back to Normal once the game starts. Speed test A is the defaults, B to G add
+one switch each (B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
+G `WGPU_BACKEND=vulkan`, Windows, where Direct3D 12 is the default), and every speed test adds `XIVLEGACY_FRAMESTATS=1`. A profile wins
+over Settings for its switches. Under the Join row the launcher shows every switch that Join sets.
+A speed test also sets `XIVLEGACY_BUG_TAG=speed <letter>`, so the in-game report (Ctrl+F12, or both
+sticks held in) opens the chat line with `!bug speed <letter> ` and the report says which run it was.
+
+config.sys is what ffxivconfig.exe writes; ffxivgame.exe reads it at start-up (0x405C90, version
+0x20120419, 0xE0 bytes of little-endian u32s and two UTF-16 strings). +0x10 is 0 for a window with a
+frame, otherwise full screen (a frameless window at 0,0); +0x14 and +0x18 are the resolution, which
+the game raises to at least 1024x720. Without the file the game uses 1280x720 in a window. The
+launcher changes only those three fields of a file that is there. The game's own full screen is, on
+our client, a frameless window at the resolution at the display's top left (Borderless window); it
+covers the display only at the display's own size, or with `XIVLEGACY_FULLSCREEN=1`.
+
+**Starting muted.** Test clients and scripts:
+
+- the host: `xivlegacy-host --mute --module ...`, or `XIVLEGACY_NOAUDIO=1` (any value but `0`);
+- the launcher: `XIVLegacy --mute` (on a Mac,
+  `/Applications/XIVLegacy.app/Contents/MacOS/XIVLegacy --mute`) mutes the games it starts in that run,
+  whatever Settings say. `XIVLEGACY_NOAUDIO=1` in the launcher's environment reaches the game as well.
+
 ## Switches for debugging
 
 | Variable | |
@@ -61,7 +103,7 @@ button is No.
 | `XIVLEGACY_CONTROL=<fifo>` | drive a running game: `key <name>`, `hold <key> <ms>`, `click <x> <y>`, `move <x> <y>`, `type <text>`, `snap <png>`, `stack`, `findf <x> <y> <z> [tol [hex from]]` (guest addresses holding a float triple), `findnan` (three NaN floats in a row), `luatest` (the next Lua protected call first checks that a Lua error lands back in it: `[lua] self-test` in the log), `look <button> <dx> <dy> <steps> [ms [still ms]]` (hold a mouse button and drag: mouse-look), `keydown <key>` / `keyup <key>`, `wheel <notches> [count]`, `stall <ms>` (hold the guest lock: a hitch), `dumpf <hex addr> [count]` (guest floats), `trace` (the next frame's targets, clears, copies and draws), `snaptex <id> <png>` (a texture or render target by its trace id; float formats scaled), `gfxdbg <n>` (1 wireframe, 2 gray textures, 3 gray render targets), `skipvs <id>`, `vsc` (current vertex constants), `cpuvs <id>` (the next draw with that vertex shader against the CPU interpreter), `onlyvs <id>` (draw only that shader in full-size passes), `dumpvs <id> [n]` (draw inputs), `watch <hex addr> [bytes]` / `unwatch` (log the translated functions that write there) |
 | `XIVLEGACY_KEYS="12:return,15:left,17:click@575x515"` | scripted input at seconds after start |
 | `XIVLEGACY_SNAP=<dir>`, `XIVLEGACY_SNAP_EVERY=<n>` | the back buffer as PNGs |
-| `XIVLEGACY_PROFILE=<seconds>:<delay>` | in-process sampling profiler (self/inclusive by function, per thread) |
+| `XIVLEGACY_PROFILE=<seconds>:<delay>` | in-process sampling profiler (self/inclusive by function, per thread). On Windows (host_win.c) self time only, translated code named `f_<guest address>` through rt_table; launch profile "Speed test P" sets `120:60` |
 | `XIVLEGACY_PROFILE_FOCUS=<name>` / `=><name>` | with the profiler: the call stacks above the functions matching `name` / what they call |
 | `XIVLEGACY_FRAMESTATS` | fps, draws and clears a frame |
 | `XIVLEGACY_GAMELOG` | the game's own log lines (its log callbacks, and the stream log via the `streamlog` hook) |
@@ -78,7 +120,11 @@ button is No.
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |
 | `XIVLEGACY_CASTCHECK=1` | as each drain starts, the game's own `dynamic_cast<CharaActor>` of every queued actor compared with its RTTI (`[actors] dynamic_cast...` on a mismatch) |
 | `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
-| `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
+| `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal (`XIVLEGACY_NOAUDIO=0` keeps the sound) |
+| `XIVLEGACY_PARALLEL=1` | the main loop runs beside the guest lock, as on Windows (experimental: `docs/PARALLEL.md`); control FIFO `par 0`/`par 1` switches it, `mark <text>` logs a marker |
+| `XIVLEGACY_SHIMCOUNT=1` | calls per shim every 5 s, the drawing thread's and the others' |
+| `XIVLEGACY_VOLUME=<0-100>`, `XIVLEGACY_VSYNC=0` / `1`, `XIVLEGACY_FULLSCREEN=1` | the sound's loudness; VSync over the game's choice; the game's full-screen window covers the display (Settings) |
+| `XIVLEGACY_BUG_TAG=<words>` | the bug-report chat line opens with `!bug <words> ` instead of `!bug ` (launch profiles set `speed A`-`speed I` and `speed P`) |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
 | `XIVLEGACY_ACTORLOOKUP=0` | Leave the camera's actor-by-id lookups unchecked (the `[actors] id lookup` check, `actor_lookup` hook): to rule it out |

@@ -588,6 +588,16 @@ static void pass(float* out)
         callback(g_callbacks[k], 1, 1, 0, 0); /* OnProcessingPassEnd */
 }
 
+/* Sound off: no audio device is opened and the engine runs on the clock, so the game behaves the
+ * same. The host's --mute, or XIVLEGACY_NOAUDIO set to anything but 0 (test clients, Settings). */
+int g_xaudio2_mute;
+
+static int xaudio2_muted(void)
+{
+    const char* e = getenv("XIVLEGACY_NOAUDIO");
+    return g_xaudio2_mute || (e && *e && strcmp(e, "0") != 0);
+}
+
 static void engine_thread(void* arg)
 {
     (void)arg;
@@ -597,15 +607,26 @@ static void engine_thread(void* arg)
     /* The device pulls in 10 ms steps rather than its own default (larger on some Windows drivers,
      * where it emptied the queue between our batches). */
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "480");
-    if (!getenv("XIVLEGACY_NOAUDIO") && SDL_InitSubSystem(SDL_INIT_AUDIO))
+    if (!xaudio2_muted() && SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
         SDL_AudioSpec spec = { SDL_AUDIO_F32, 2, OUT_RATE };
         g_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
         if (g_stream)
+        {
+            /* XIVLEGACY_VOLUME=0-100: the whole game's loudness (the launcher's Settings) */
+            const char* v = getenv("XIVLEGACY_VOLUME");
+            if (v && *v)
+            {
+                int pct = atoi(v);
+                pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+                SDL_SetAudioStreamGain(g_stream, (float)pct / 100.0f);
+                rt_log("[xaudio2] volume %d%%\n", pct);
+            }
             SDL_ResumeAudioStreamDevice(g_stream);
+        }
     }
     if (!g_stream)
-        rt_log("[xaudio2] no audio device: the engine runs silent, on the clock\n");
+        rt_log("[xaudio2] no audio device%s: the engine runs silent, on the clock\n", xaudio2_muted() ? " (muted)" : "");
     static float out[2 * QUANTUM];
     uint64_t next = rt_monotonic_ns();
     const int pass_bytes = (int)sizeof out;

@@ -70,9 +70,10 @@ mod embedded {
     include!(concat!(env!("OUT_DIR"), "/host_files.rs"));
 }
 
-/// Windows and Linux release builds carry the host inside the launcher: it is written once per
-/// version to the settings folder (bin-<version>) and run from there. On Linux the host finds its
-/// libraries (SDL3, wgpu-native) beside itself ($ORIGIN).
+/// Windows and Linux release builds carry the host inside the launcher: it is written to the
+/// settings folder (bin-<version>) and run from there, rewritten whenever its bytes differ (test
+/// builds share a version, and a changed host is often the same size: speed6 ran speed5's host).
+/// On Linux the host finds its libraries (SDL3, wgpu-native) beside itself ($ORIGIN).
 fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
     if embedded::HOST_FILES.is_empty() {
         return Ok(None);
@@ -81,7 +82,9 @@ fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
     std::fs::create_dir_all(&dir)?;
     for (name, bytes) in embedded::HOST_FILES {
         let p = dir.join(name);
-        if p.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+        let same = p.metadata().is_ok_and(|m| m.len() == bytes.len() as u64)
+            && std::fs::read(&p).is_ok_and(|on_disk| on_disk.as_slice() == *bytes);
+        if !same {
             // written aside and renamed in, so a launcher stopped halfway leaves no short file
             let part = p.with_extension("part");
             std::fs::write(&part, bytes)?;
@@ -99,7 +102,7 @@ fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
 /// Starts our own client: the host with the game module this machine made. It takes the game
 /// folder and the session id, builds the game's launch argument itself, and sends the lobby to
 /// XIVLEGACY_LOBBY. Reports a game that closes within 30 seconds.
-pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Path) -> Result<()> {
+pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Path, env: &[(String, Option<String>)]) -> Result<()> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -132,6 +135,22 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
         .env("XIVLEGACY_LAUNCHER_LOG", crate::config::dir().join("launcher.log"))
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    // the Settings screen's switches, after ours so a test can override them
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    // the log says what's set, and what was cleared from this launcher's own environment (setx)
+    let last: std::collections::BTreeMap<&str, Option<&str>> = env.iter().map(|(k, v)| (k.as_str(), v.as_deref())).collect();
+    let set: Vec<String> = last.iter().filter_map(|(k, v)| v.map(|v| format!("{k}={v}"))).collect();
+    let cleared: Vec<&str> = last.iter().filter(|(k, v)| v.is_none() && std::env::var_os(k).is_some()).map(|(k, _)| *k).collect();
+    crate::config::log(&format!(
+        "game switches: {}{}",
+        if set.is_empty() { "none".to_string() } else { set.join(" ") },
+        if cleared.is_empty() { String::new() } else { format!(" (cleared: {})", cleared.join(" ")) }
+    ));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -158,9 +177,9 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
 }
 
 #[cfg(windows)]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>, env: &[(String, Option<String>)]) -> Result<()> {
     if let Some(m) = module {
-        return launch_native(game_dir, host, session_id, m);
+        return launch_native(game_dir, host, session_id, m, env);
     }
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
@@ -305,9 +324,9 @@ pub fn exit_meaning(code: u32) -> &'static str {
 
 /// macOS and Linux: always our own client.
 #[cfg(not(windows))]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>, env: &[(String, Option<String>)]) -> Result<()> {
     use anyhow::Context;
-    launch_native(game_dir, host, session_id, module.context("no game module")?)
+    launch_native(game_dir, host, session_id, module.context("no game module")?, env)
 }
 
 #[cfg(test)]

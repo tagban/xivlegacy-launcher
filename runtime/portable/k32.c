@@ -295,23 +295,22 @@ static void sh_GetCurrentProcessId(Guest* g) { RET(0x1000u, 0); }
 
 /* --- critical sections --------------------------------------------------------------------------
  * The CRITICAL_SECTION stays in guest memory with its Win32 layout (+8 RecursionCount,
- * +12 OwningThread). Guest code runs one thread at a time, so taking a free section needs no
- * atomics; a thread that must wait releases the guest lock and sleeps on g_cs_epoch, which every
- * release of a contended section advances. */
+ * +12 OwningThread). Taking a free section is one atomic compare-and-swap of the owner, so these
+ * run without the runtime lock (thunk.c) and order the guest's data as on x86; a thread that must
+ * wait releases its locks and sleeps on g_cs_epoch, which a release advances while anyone waits. */
 static volatile uint32_t g_cs_epoch, g_cs_waiters;
 
 static int cs_try(uint32_t cs, uint32_t tid)
 {
-    uint32_t owner = rd32(cs + 12);
+    uint32_t owner = rt_cmpxchg32(cs + 12, 0, tid);
     if (!owner)
     {
-        wr32(cs + 12, tid);
         wr32(cs + 8, 1);
         return 1;
     }
     if (owner == tid)
     {
-        wr32(cs + 8, rd32(cs + 8) + 1);
+        wr32(cs + 8, rd32(cs + 8) + 1); /* only the owner writes the count */
         return 1;
     }
     return 0;
@@ -333,19 +332,47 @@ static void sh_InitializeCriticalSectionAndSpinCount(Guest* g)
 
 static void sh_DeleteCriticalSection(Guest* g) { RET(0, 1); }
 
+/* The crash guards' hooks in the critical-section shims (xiv_crashlog.c) keep tables of their own.
+ * With XIVLEGACY_PARALLEL these shims run without the runtime lock (thunk.c), while the main loop
+ * and the drawing thread both call them: the hooks take it. */
+static unsigned xcl_hooks_enter(void) { return gt_parallel() ? gt_shim_enter() : 0; }
+static void xcl_hooks_leave(unsigned saved)
+{
+    if (gt_parallel())
+        gt_shim_leave(saved);
+}
+
 static void sh_EnterCriticalSection(Guest* g)
 {
+    unsigned held = xcl_hooks_enter();
     xcl_note_cs(g->esp); /* the game allocator's frees, for the deferred actor delete (xiv_crashlog.c) */
     xcl_cast_check(g);
+    xcl_hooks_leave(held);
     uint32_t cs = ARG(0), tid = gt_self()->tid;
-    while (!cs_try(cs, tid))
+    for (unsigned spin = 0; !cs_try(cs, tid); ++spin)
     {
+        if (spin < 100 && gt_parallel())
+        {
+#if defined(__aarch64__)
+            __asm__ __volatile__("yield"); /* its owner may be running on another core: a short spin first */
+#elif defined(__x86_64__) || defined(__i386__)
+            __asm__ __volatile__("pause");
+#endif
+            continue;
+        }
         uint32_t e = g_cs_epoch;
-        g_cs_waiters++;
+        plat_atomic_add32(&g_cs_waiters, 1);
+        /* counted as waiting before the second look: a release either sees the count or left the
+         * section free for this look */
+        if (cs_try(cs, tid))
+        {
+            plat_atomic_add32(&g_cs_waiters, (uint32_t)-1);
+            break;
+        }
         gt_unlock();
-        plat_wait32(&g_cs_epoch, e);
+        plat_wait32_ms(&g_cs_epoch, e, 10);
         gt_lock();
-        g_cs_waiters--;
+        plat_atomic_add32(&g_cs_waiters, (uint32_t)-1);
     }
     RET(0, 1);
 }
@@ -354,36 +381,33 @@ static void sh_TryEnterCriticalSection(Guest* g) { RET(cs_try(ARG(0), gt_self()-
 
 static void sh_LeaveCriticalSection(Guest* g)
 {
-    xcl_note_leave_cs(g->esp, g->esi); /* the game allocator's allocations (xiv_crashlog.c) */
+    {
+        unsigned held = xcl_hooks_enter();
+        xcl_note_leave_cs(g->esp, g->esi); /* the game allocator's allocations (xiv_crashlog.c) */
+        xcl_hooks_leave(held);
+    }
     uint32_t cs = ARG(0), n = rd32(cs + 8);
     if (n > 1)
         wr32(cs + 8, n - 1);
     else
     {
         wr32(cs + 8, 0);
-        wr32(cs + 12, 0);
+        rt_xchg32(cs + 12, 0); /* a full barrier: the section's writes before the release */
         if (g_cs_waiters)
         {
-            g_cs_epoch++;
+            plat_atomic_add32(&g_cs_epoch, 1);
             plat_wake_all32(&g_cs_epoch);
         }
     }
     RET(0, 1);
 }
 
-/* --- interlocked: guest code holds the guest lock, so plain read-modify-write is atomic ------- */
-static void sh_InterlockedIncrement(Guest* g) { uint32_t v = rd32(ARG(0)) + 1; wr32(ARG(0), v); RET(v, 1); }
-static void sh_InterlockedDecrement(Guest* g) { uint32_t v = rd32(ARG(0)) - 1; wr32(ARG(0), v); RET(v, 1); }
-static void sh_InterlockedExchange(Guest* g) { uint32_t o = rd32(ARG(0)); wr32(ARG(0), ARG(1)); RET(o, 2); }
-static void sh_InterlockedExchangeAdd(Guest* g) { uint32_t o = rd32(ARG(0)); wr32(ARG(0), o + ARG(1)); RET(o, 2); }
-
-static void sh_InterlockedCompareExchange(Guest* g)
-{
-    uint32_t o = rd32(ARG(0));
-    if (o == ARG(2))
-        wr32(ARG(0), ARG(1));
-    RET(o, 3);
-}
+/* --- interlocked: atomic, for guest threads that run at once (XIVLEGACY_PARALLEL); guest.h ----- */
+static void sh_InterlockedIncrement(Guest* g) { RET(rt_xadd32(ARG(0), 1) + 1, 1); }
+static void sh_InterlockedDecrement(Guest* g) { RET(rt_xadd32(ARG(0), (uint32_t)-1) - 1, 1); }
+static void sh_InterlockedExchange(Guest* g) { RET(rt_xchg32(ARG(0), ARG(1)), 2); }
+static void sh_InterlockedExchangeAdd(Guest* g) { RET(rt_xadd32(ARG(0), ARG(1)), 2); }
+static void sh_InterlockedCompareExchange(Guest* g) { RET(rt_cmpxchg32(ARG(0), ARG(2), ARG(1)), 3); }
 
 /* --- code pages and character types: Windows-1252 ----------------------------------------------
  * Bytes map to the code points of the same value (1252's 0x80-0x9F punctuation is not
@@ -638,6 +662,39 @@ static void sh_GetSystemTimeAsFileTime(Guest* g)
 uint32_t (*k32_sleep_filter)(uint32_t site, uint32_t ms);
 int (*k32_sleep_wait)(uint32_t site, uint32_t ms);
 
+/* A zero-time yield. On Windows SwitchToThread returns at once when the core has nothing else to
+ * run, so a guest thread that polls for work and yields in between went round its loop ~240,000
+ * times a second, taking and giving up the guest lock each time (#29, #30: from the title screen on,
+ * and 7-9 fps for over a minute after entering Ul'dah). macOS's sched_yield slows such a thread
+ * down by itself. A thread whose previous yield returned moments ago (the wait for the lock is not
+ * counted, it is what makes a spinning thread's calls look far apart) naps now: 1 ms after a few in
+ * a row, and while loading (the workers are what everyone waits for) 0.2 ms after a longer run. The
+ * drawing thread never naps. XIVLEGACY_SPINNAP=0: plain yields (SwitchToThread kept its 1 ms nap
+ * outside loading, as before). */
+static RT_TLS uint64_t t_yield_return;
+static RT_TLS unsigned t_yield_streak;
+void k32_spin_yield(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char* e = getenv("XIVLEGACY_SPINNAP");
+        on = !(e && *e == '0');
+    }
+    uint64_t now = rt_monotonic_ns();
+    t_yield_streak = now - t_yield_return < 100000u ? t_yield_streak + 1 : 0;
+    if (on && !gt_is_game() && t_yield_streak > (gt_loading() ? 32u : 4u))
+    {
+        if (gt_loading())
+            plat_sleep_us(200);
+        else
+            plat_sleep_ms(1);
+    }
+    else
+        plat_yield();
+    t_yield_return = rt_monotonic_ns();
+}
+
 static void sh_Sleep(Guest* g)
 {
     uint32_t ms = ARG(0), site = rd32(g->esp);
@@ -663,7 +720,7 @@ static void sh_Sleep(Guest* g)
     else if (ms)
         plat_sleep_ms(ms);
     else
-        plat_yield();
+        k32_spin_yield();
     uint64_t t1 = prof ? rt_monotonic_ns() : 0;
     gt_lock();
     if (prof)

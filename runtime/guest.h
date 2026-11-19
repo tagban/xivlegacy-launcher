@@ -68,6 +68,50 @@ RT_INLINE float rdpf32(const unsigned char* p) { float v; memcpy(&v, p, 4); retu
 RT_INLINE double rdpf64(const unsigned char* p) { double v; memcpy(&v, p, 8); return v; }
 RT_INLINE void wrpf32(unsigned char* p, float v) { memcpy(p, &v, 4); }
 RT_INLINE void wrpf64(unsigned char* p, double v) { memcpy(p, &v, 8); }
+/* x86's locked read-modify-writes (lock xadd, lock cmpxchg, xchg with memory): atomic and a full
+ * barrier, as on x86, for guest threads that run at the same time (gthread.h). x86 allows them
+ * unaligned; arm64 does not, so an unaligned one is a plain read-modify-write (the guest lock still
+ * makes it atomic for the threads that share it). */
+#if defined(__GNUC__) || defined(__clang__)
+#define RT_ATOMIC_OPS(bits, T)                                                                          \
+    RT_INLINE T rt_xadd##bits(uint32_t a, T v)                                                         \
+    {                                                                                                  \
+        if (!(a & (sizeof(T) - 1)))                                                                    \
+            return __atomic_fetch_add((T*)GUEST_PTR(a), v, __ATOMIC_SEQ_CST);                          \
+        T o = rd##bits(a);                                                                             \
+        wr##bits(a, (T)(o + v));                                                                       \
+        return o;                                                                                      \
+    }                                                                                                  \
+    RT_INLINE T rt_xchg##bits(uint32_t a, T v)                                                         \
+    {                                                                                                  \
+        if (!(a & (sizeof(T) - 1)))                                                                    \
+            return __atomic_exchange_n((T*)GUEST_PTR(a), v, __ATOMIC_SEQ_CST);                         \
+        T o = rd##bits(a);                                                                             \
+        wr##bits(a, v);                                                                                \
+        return o;                                                                                      \
+    }                                                                                                  \
+    /* returns what memory held; stores v there iff that was expected */                              \
+    RT_INLINE T rt_cmpxchg##bits(uint32_t a, T expected, T v)                                          \
+    {                                                                                                  \
+        if (!(a & (sizeof(T) - 1)))                                                                    \
+        {                                                                                              \
+            __atomic_compare_exchange_n((T*)GUEST_PTR(a), &expected, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); \
+            return expected;                                                                           \
+        }                                                                                              \
+        T o = rd##bits(a);                                                                             \
+        if (o == expected)                                                                             \
+            wr##bits(a, v);                                                                            \
+        return o;                                                                                      \
+    }
+#else
+#define RT_ATOMIC_OPS(bits, T)                                                                          \
+    RT_INLINE T rt_xadd##bits(uint32_t a, T v) { T o = rd##bits(a); wr##bits(a, (T)(o + v)); return o; } \
+    RT_INLINE T rt_xchg##bits(uint32_t a, T v) { T o = rd##bits(a); wr##bits(a, v); return o; }         \
+    RT_INLINE T rt_cmpxchg##bits(uint32_t a, T e, T v) { T o = rd##bits(a); if (o == e) wr##bits(a, v); return o; }
+#endif
+RT_ATOMIC_OPS(8, uint8_t)
+RT_ATOMIC_OPS(16, uint16_t)
+RT_ATOMIC_OPS(32, uint32_t)
 
 #include "sse.h" /* X128 and the SSE/MMX helpers; needs rd64/wr64 above */
 
@@ -448,10 +492,18 @@ RT_INLINE void wrf80(uint32_t a, double v)
  * local the compiler cannot see through, so it stays in a register and an access [reg + disp] is
  * one load or store with the displacement folded in. With the base a constant, clang formed each
  * address anew (add, orr with the base, then the access). The helpers above keep the plain form. */
-#if defined(RT_TRANSLATION) && defined(RT_GUEST_WINDOW) && defined(RT_GUEST_FIXED_BASE) && (defined(__clang__) || defined(__GNUC__))
+#if defined(RT_TRANSLATION) && defined(RT_GUEST_WINDOW) && (defined(__clang__) || defined(__GNUC__))
 RT_INLINE unsigned char* rt_opaque_base(void)
 {
+#if defined(RT_GUEST_FIXED_BASE)
     unsigned char* p = (unsigned char*)(uintptr_t)(RT_GUEST_FIXED_BASE);
+#else
+    /* Windows: the window is wherever the host reserved it, and rt_guest_base never changes after
+     * that. Read once per function into the local: through the variable, every guest store (which
+     * may alias anything under -fno-strict-aliasing) made the next access reload the base, in a
+     * DLL through its import too. */
+    unsigned char* p = rt_guest_base;
+#endif
     __asm__("" : "+r"(p));
     return p;
 }

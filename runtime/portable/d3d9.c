@@ -23,6 +23,9 @@
 #include "gthread.h"
 
 /* XIVLEGACY_MOTIONLOG's file (the frame loop below), and a mark in it from the control FIFO */
+/* the drawing thread's time in g9_draw and g9_present (XIVLEGACY_FRAMESTATS) */
+static uint64_t g_draw_ns, g_present_ns;
+
 static FILE* volatile g_motion;
 void d3d9_motion_mark(const char* text)
 {
@@ -43,6 +46,7 @@ void d3d9_motion_tick(void)
 }
 #include "gwin.h"
 #include "k32.h"
+#include "input.h"
 #include "plat.h"
 #include "thunk.h"
 #include "user32.h"
@@ -1550,7 +1554,14 @@ static void sh_D3D9_CreateDevice(Guest* g)
     g_dev->window = window;
     g_dev->o = obj_new(K_DEVICE);
     g_dev->cursor_shown = 1;
-    g9_init(user32_sdl_window(window), rd32(pp + D3DPRESENT_PARAMETERS_PresentationInterval) != 0x80000000u);
+    {
+        /* XIVLEGACY_VSYNC=0 or 1: over the game's own choice (D3DPRESENT_INTERVAL_IMMEDIATE is off) */
+        int vsync = rd32(pp + D3DPRESENT_PARAMETERS_PresentationInterval) != 0x80000000u;
+        const char* e = getenv("XIVLEGACY_VSYNC");
+        if (e && (*e == '0' || *e == '1'))
+            vsync = *e == '1', rt_log("[d3d9] VSync %s (XIVLEGACY_VSYNC)\n", vsync ? "on" : "off");
+        g9_init(user32_sdl_window(window), vsync);
+    }
     Obj* sc = obj_new(K_SWAPCHAIN);
     g_dev->swapchain = sc ? sc->guest : 0;
     make_targets();
@@ -1731,21 +1742,44 @@ static void present(void)
     {
         static int on = -1;
         static uint64_t last_draws, last_clears, last_ns;
+        static uint32_t last_reads;
+        extern volatile uint32_t u32_cursor_reads;
         if (on < 0)
             on = getenv("XIVLEGACY_FRAMESTATS") != NULL;
         if (on && g_dev->frames % 60 == 0)
         {
             uint64_t now = rt_monotonic_ns();
-            rt_log("[d3d9] frames %llu-%llu: %.1f fps, %.1f draws, %.1f clears a frame\n", (unsigned long long)g_dev->frames - 59,
-                (unsigned long long)g_dev->frames, last_ns ? 60e9 / (double)(now - last_ns) : 0.0, (g_dev->draws - last_draws) / 60.0,
-                (g_dev->clears - last_clears) / 60.0);
-            last_draws = g_dev->draws, last_clears = g_dev->clears, last_ns = now;
+            uint32_t reads = u32_cursor_reads;
+            static uint64_t last_rg, last_ro, last_rt;
+            uint64_t rg, ro, rtk;
+            gt_rt_costs(&rg, &ro, &rtk);
+            static uint64_t last_gw;
+            uint64_t gw, grd, grb;
+            gt_game_costs(&gw, &grd, &grb);
+            rt_log("[d3d9] locks: drawer waited %.2f ms a frame for the guest lock, %.2f ms for the runtime lock (%.0f takes); others %.2f ms\n",
+                (gw - last_gw) / 60e6, (rg - last_rg) / 60e6, (rtk - last_rt) / 60.0, (ro - last_ro) / 60e6);
+            last_rg = rg, last_ro = ro, last_rt = rtk, last_gw = gw;
+            static uint64_t last_dn, last_pn, last_tk, last_np;
+            uint64_t tk, np;
+            xiv_pace_costs(&tk, &np);
+            uint32_t tap_id;
+            uint64_t tap = input_last_tap_ns(&tap_id);
+            rt_log("[d3d9] pacing: drawer waited %.2f ms a frame for the main loop's tick, napped %.2f ms a frame (loading or answering a tap); last tap %05x %.1f s ago\n",
+                (tk - last_tk) / 60e6, (np - last_np) / 60e6, tap_id, tap ? (now - tap) * 1e-9 : -1.0);
+            last_tk = tk, last_np = np;
+            rt_log("[d3d9] frames %llu-%llu: %.1f fps, %.1f draws, %.1f clears a frame, main loop %.1f/s; renderer %.2f ms draws + %.2f ms present a frame\n",
+                (unsigned long long)g_dev->frames - 59, (unsigned long long)g_dev->frames, last_ns ? 60e9 / (double)(now - last_ns) : 0.0,
+                (g_dev->draws - last_draws) / 60.0, (g_dev->clears - last_clears) / 60.0,
+                last_ns ? (reads - last_reads) * 1e9 / (double)(now - last_ns) : 0.0, (g_draw_ns - last_dn) / 60e6, (g_present_ns - last_pn) / 60e6);
+            last_dn = g_draw_ns, last_pn = g_present_ns;
+            last_draws = g_dev->draws, last_clears = g_dev->clears, last_ns = now, last_reads = reads;
         }
     }
     /* XIVLEGACY_FRAMESTATS: each slow frame (over 45 ms) with what happened during it */
     {
         static int on = -1;
         static uint64_t last_ns, last_other, last_draws, last_wait, last_read, last_rbytes;
+        static uint64_t last_hdn, last_hpn;
         if (on < 0)
             on = getenv("XIVLEGACY_FRAMESTATS") != NULL;
         uint64_t now = rt_monotonic_ns(), other = gt_other_held_ns();
@@ -1758,14 +1792,17 @@ static void present(void)
             xiv_on_hitch(last_ns, now);
         if (on && last_ns && now - last_ns > 45000000ull)
             rt_log("[hitch] frame %llu: %.0f ms; other threads held the lock %.0f ms; %u shader compiles %.0f ms, %u pipelines %.0f ms, "
-                   "%u uploads %.1f MB %.0f ms; %llu draws; this thread waited for the lock %.0f ms, read files %.0f ms (%.1f MB)\n",
+                   "%u uploads %.1f MB %.0f ms; %llu draws (renderer %.0f ms, last present %.0f ms); this thread waited for the lock %.0f ms, read files %.0f ms (%.1f MB)\n",
                 (unsigned long long)g_dev->frames, (now - last_ns) / 1e6, (other - last_other) / 1e6, nc, cns / 1e6, np, pns / 1e6, nu,
-                ub / 1048576.0, uns / 1e6, (unsigned long long)(g_dev->draws - last_draws), (wait - last_wait) / 1e6, (rd - last_read) / 1e6,
+                ub / 1048576.0, uns / 1e6, (unsigned long long)(g_dev->draws - last_draws), (g_draw_ns - last_hdn) / 1e6, (g_present_ns - last_hpn) / 1e6, (wait - last_wait) / 1e6, (rd - last_read) / 1e6,
                 (rbytes - last_rbytes) / 1048576.0);
         last_ns = now, last_other = other, last_draws = g_dev->draws, last_wait = wait, last_read = rd, last_rbytes = rbytes;
+        last_hdn = g_draw_ns, last_hpn = g_present_ns;
     }
     Obj* bb = obj(g_dev->backbuffer);
+    uint64_t present_t0 = rt_monotonic_ns();
     g9_present(bb ? bb->gt : NULL);
+    g_present_ns += rt_monotonic_ns() - present_t0;
     if (g_dev->frames == 1 || (g_dev->frames & 1023) == 0)
         rt_log("[d3d9] frame %llu: %llu draws, %llu clears so far\n", (unsigned long long)g_dev->frames,
             (unsigned long long)g_dev->draws, (unsigned long long)g_dev->clears);
@@ -2308,6 +2345,15 @@ static void note_pair(void)
     }
 }
 
+/* XIVLEGACY_FRAMESTATS: the drawing thread's time in the graphics back end (g9_draw) and in its present,
+ * to tell the renderer's cost from the game's own work in a slow frame */
+static void timed_draw(const G9Draw* d)
+{
+    uint64_t t0 = rt_monotonic_ns();
+    g9_draw(d);
+    g_draw_ns += rt_monotonic_ns() - t0;
+}
+
 /* DrawPrimitive(type, start_vertex, primitive_count) */
 static void sh_Dev_DrawPrimitive(Guest* g)
 {
@@ -2317,7 +2363,7 @@ static void sh_Dev_DrawPrimitive(Guest* g)
     if (draw_state(&d, ARG(1), ARG(3)))
     {
         stream_range(&d, ARG(2), prim_vertices(ARG(1), ARG(3)));
-        g9_draw(&d);
+        timed_draw(&d);
     }
     RET(D3D_OK, 4);
 }
@@ -2337,7 +2383,7 @@ static void sh_Dev_DrawIndexedPrimitive(Guest* g)
         if ((uint64_t)(start + count) * isize <= ib->size && base >= 0 && whole_draw(&d, ib, start, isize))
         {
             d.base_vertex = base;
-            g9_draw(&d);
+            timed_draw(&d);
         }
         else if ((uint64_t)(start + count) * isize <= ib->size)
         {
@@ -2396,7 +2442,7 @@ static void sh_Dev_DrawIndexedPrimitive(Guest* g)
             d.base_vertex = base - first;
             d.indices = GUEST_PTR(ib->mem + start * isize);
             d.index_size = isize;
-            g9_draw(&d);
+            timed_draw(&d);
         }
     }
     RET(D3D_OK, 7);
@@ -2413,7 +2459,7 @@ static void sh_Dev_DrawPrimitiveUP(Guest* g)
     {
         d.streams[0] = (G9Stream){ GUEST_PTR(ARG(3)), prim_vertices(ARG(1), ARG(2)) * ARG(4), ARG(4), 0 };
         d.instances = 1;
-        g9_draw(&d);
+        timed_draw(&d);
     }
     bind(&g_dev->s.stream[0], 0);
     g_dev->s.stream_off[0] = g_dev->s.stream_stride[0] = 0;
@@ -2445,7 +2491,7 @@ static void sh_Dev_DrawIndexedPrimitiveUP(Guest* g)
         d.indices = ip;
         d.index_size = isize;
         d.instances = 1;
-        g9_draw(&d);
+        timed_draw(&d);
     }
     bind(&g_dev->s.stream[0], 0);
     g_dev->s.stream_off[0] = g_dev->s.stream_stride[0] = 0;

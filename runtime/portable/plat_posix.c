@@ -150,6 +150,14 @@ void plat_sleep_ms(uint32_t ms)
     }
 }
 
+void plat_sleep_us(uint32_t us)
+{
+    struct timespec t = { (time_t)(us / 1000000u), (long)(us % 1000000u) * 1000L };
+    while (nanosleep(&t, &t) != 0 && errno == EINTR)
+    {
+    }
+}
+
 void plat_yield(void)
 {
     sched_yield();

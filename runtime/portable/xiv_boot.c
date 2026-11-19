@@ -36,6 +36,16 @@
 
 int xiv_boot_prepare(int* argcp, char** argv)
 {
+    /* --mute: no sound (a test client); the same as XIVLEGACY_NOAUDIO=1 (xaudio2.c) */
+    for (int i = 1; i < (*argcp); ++i)
+        if (!strcmp(argv[i], "--mute"))
+        {
+            extern int g_xaudio2_mute;
+            g_xaudio2_mute = 1;
+            memmove(&argv[i], &argv[i + 1], (size_t)((*argcp) - i) * sizeof *argv);
+            (*argcp) -= 1;
+            break;
+        }
 #ifdef XIVLEGACY_SPLIT
     /* --module <file>: the game, made on this machine from its own ffxivgame.exe (xiv_game.h) */
     const char* module = NULL;
@@ -49,7 +59,7 @@ int xiv_boot_prepare(int* argcp, char** argv)
         }
     if (!module)
     {
-        printf("usage: xivlegacy-host --module <game module> <1.23b install folder> [session id]\n");
+        printf("usage: xivlegacy-host [--mute] --module <game module> <1.23b install folder> [session id]\n");
         return 2;
     }
     char module_err[512];
