@@ -30,6 +30,11 @@ all the game gives up and quits after about 30 frames.
 
 ## Switches worth knowing
 
+The launcher's Settings screen has an "Extra switches" box: lines like `XIVLEGACY_CPUSETS=0` there
+are set for the game at each Join, so A/B tests need no `setx` (and `NAME=` there clears a variable
+set with `setx`, for that game only). `setx` lines can be pasted in as they are. launcher.log lists
+what each Join set (`game switches:`).
+
 | Variable | Does |
 | --- | --- |
 | `XIVLEGACY_FRAMESTATS=1` | frame time statistics in the log |
@@ -37,7 +42,8 @@ all the game gives up and quits after about 30 frames.
 | `XIVLEGACY_WGPU_BACKEND=dx12` / `vulkan` | which API wgpu drives (default: wgpu's pick, Vulkan on most PCs) |
 | `XIVLEGACY_WGPU_PRESENT=fifo` / `mailbox` / `immediate` | present mode (vsync or not) |
 | `XIVLEGACY_WGPU_STATS=1` | per-frame wgpu costs (passes, uploads) |
-| `XIVLEGACY_NOAUDIO=1` | no audio device (to tell audio stalls from graphics ones) |
+| `XIVLEGACY_NOAUDIO=1` | no audio device (to tell audio stalls from graphics ones); Settings' Sound Off sets it |
+| `XIVLEGACY_VSYNC=0` / `1` | VSync over the game's choice, any back end; Settings' VSync sets it |
 | `XIVLEGACY_STOCK=1` (launcher) | start the 2010 ffxivgame.exe instead of our client |
 
 Audio: `[xaudio2] N of M passes late (the device ran dry)` counts the times the engine fed the

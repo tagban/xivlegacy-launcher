@@ -10,7 +10,9 @@ mod icon;
 mod shortcut;
 mod lan;
 mod make;
+mod pad;
 mod scan;
+mod settings;
 mod sqex;
 mod update;
 mod web;
@@ -28,13 +30,19 @@ use xivlegacy_install::setup::{self, DiscSource, ISO_7Z, PATCHES_ZIP, PatchSourc
 use xivlegacy_install::{directx, verify};
 
 use config::{Config, Server};
+use pad::Nav;
+use settings::{Display, GameSettings, VSync};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The launcher was started with --mute.
+static MUTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const DIRECTX_URL: &str = "https://www.microsoft.com/en-us/download/details.aspx?id=8109";
 
 fn main() -> eframe::Result {
     // XIVLegacy --make-game <game folder>: make the game module from a terminal, then exit.
     let args: Vec<String> = std::env::args().collect();
+    // --mute: this run's game has no sound, whatever Settings say (test sessions)
+    MUTE.store(args.iter().any(|a| a == "--mute"), std::sync::atomic::Ordering::Relaxed);
     if args.get(1).map(String::as_str) == Some("--make-game") {
         let Some(dir) = args.get(2) else {
             eprintln!("usage: XIVLegacy --make-game <FINAL FANTASY XIV 1.23b folder>");
@@ -125,6 +133,32 @@ enum Screen {
     Setup,
     Installing,
     Launcher,
+    Settings,
+}
+
+/// The Settings screen's rows, in order; up and down move between them, left and right change one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Row {
+    Sound,
+    Volume,
+    Resolution,
+    Display,
+    VSync,
+    Api,
+    Extra,
+    Reset,
+    Back,
+}
+
+impl Row {
+    fn all() -> Vec<Row> {
+        let mut v = vec![Row::Sound, Row::Volume, Row::Resolution, Row::Display, Row::VSync];
+        if settings::graphics_apis().len() > 1 {
+            v.push(Row::Api);
+        }
+        v.extend([Row::Extra, Row::Reset, Row::Back]);
+        v
+    }
 }
 
 struct App {
@@ -154,6 +188,13 @@ struct App {
     updating: bool,
     broken: bool,
     making: Option<(make::Step, usize, usize)>,
+    // settings
+    pads: pad::Pads,
+    row: usize,
+    /// The row changed by the pad or keys: scrolled into view once.
+    row_moved: bool,
+    /// The extra switches box had the keyboard last frame.
+    typed: bool,
 }
 
 impl App {
@@ -194,6 +235,10 @@ impl App {
             updating: false,
             broken: false,
             making: None,
+            pads: pad::Pads::new(),
+            row: 0,
+            row_moved: false,
+            typed: false,
             cfg,
         };
         if !ready {
@@ -319,6 +364,7 @@ impl App {
         self.cfg.username = user.clone();
         self.cfg.save();
         let remember = self.cfg.remember;
+        let game_settings = self.cfg.game.clone();
         let known_lan = self.cfg.servers[self.cfg.server].lan.clone();
         self.busy = true;
         self.say(if create { "Creating your account…" } else { "Signing in…" }, false);
@@ -360,7 +406,21 @@ impl App {
                 };
                 say("Starting the game…");
                 config::log(&format!("joining {host} via {target}"));
-                game::launch(&dir, &target, &sid, module.as_deref())
+                let (w, h) = game_settings.size();
+                if let Err(e) = settings::apply_config_sys(&settings::my_games(module.is_some()), &game_settings) {
+                    config::log(&format!("couldn't write config.sys: {e}"));
+                }
+                config::log(&format!(
+                    "settings: {w}x{h} {}, sound {}",
+                    format!("{:?}", game_settings.display).to_lowercase(),
+                    if !game_settings.sound || MUTE.load(std::sync::atomic::Ordering::Relaxed) {
+                        "off".to_string()
+                    } else {
+                        format!("{}%", game_settings.volume)
+                    }
+                ));
+                let env = game_settings.env(MUTE.load(std::sync::atomic::Ordering::Relaxed));
+                game::launch(&dir, &target, &sid, module.as_deref(), &env)
             })();
             let _ = tx.send(Msg::Started(r.map_err(|e| format!("{e:#}"))));
             ctx.request_repaint();
@@ -546,6 +606,11 @@ impl eframe::App for App {
         if self.screen == Screen::Launcher {
             self.poll_servers(ctx);
         }
+        let navs = self.navs(ctx);
+        if self.pads.connected() || self.pads.holding() {
+            // pads aren't window events: look again soon
+            ctx.request_repaint_after(Duration::from_millis(if self.pads.holding() { 30 } else { 60 }));
+        }
         if self.screen == Screen::Installing || self.busy {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -555,6 +620,9 @@ impl eframe::App for App {
                 ui.weak(format!("XIVLegacy {VERSION}"));
                 if let (Screen::Launcher, Some(dir)) = (&self.screen, self.cfg.game_dir.clone()) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Settings…").on_hover_text("Sound, resolution, window or full screen, test switches").clicked() {
+                            self.open_settings();
+                        }
                         if ui.add_enabled(!self.busy, egui::Button::new("Repair…").small())
                             .on_hover_text("Reinstall DirectX if needed and check every game file")
                             .clicked()
@@ -586,7 +654,8 @@ impl eframe::App for App {
             match self.screen {
                 Screen::Setup => self.setup_ui(ui, ctx),
                 Screen::Installing => self.installing_ui(ui),
-                Screen::Launcher => self.launcher_ui(ui, ctx),
+                Screen::Launcher => self.launcher_ui(ui, ctx, &navs),
+                Screen::Settings => self.settings_ui(ui, ctx, &navs),
             }
             if !self.status.is_empty() {
                 ui.add_space(8.0);
@@ -778,7 +847,17 @@ impl App {
         ui.weak("Downloads pick up where they left off if setup is interrupted.");
     }
 
-    fn launcher_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn launcher_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, navs: &[Nav]) {
+        for n in navs {
+            match n {
+                Nav::Menu => self.open_settings(),
+                // A joins once the name and password are in (a remembered sign-in)
+                Nav::Accept if !self.busy && !self.password.is_empty() && !self.cfg.username.trim().is_empty() => {
+                    self.join(ctx, false)
+                }
+                _ => {}
+            }
+        }
         ui.label(egui::RichText::new("Server").strong());
         ui.horizontal(|ui| {
             let names: Vec<String> = self.cfg.servers.iter().map(|s| format!("{}  ({})", s.name, s.host)).collect();
@@ -880,6 +959,323 @@ impl App {
         }
         if self.broken && !self.busy && ui.button("Reinstall the game files").clicked() {
             self.reinstall(ctx);
+        }
+        if self.pads.connected() {
+            ui.add_space(4.0);
+            ui.weak("Gamepad: A to Join, Start for Settings");
+        }
+    }
+}
+
+// --- Settings ---------------------------------------------------------------------------------
+
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(120, 180, 255);
+const EXTRA_ID: &str = "settings-extra";
+
+impl App {
+    fn open_settings(&mut self) {
+        if !self.busy {
+            self.screen = Screen::Settings;
+            self.row = 0;
+            self.row_moved = true;
+            self.say("", false);
+        }
+    }
+
+    fn close_settings(&mut self) {
+        self.cfg.save();
+        self.screen = Screen::Launcher;
+    }
+
+    /// This frame's menu moves: from the pads always, and from the arrow keys, Enter and Escape on
+    /// the Settings screen while no text box has the keyboard.
+    fn navs(&mut self, ctx: &egui::Context) -> Vec<Nav> {
+        let mut v = self.pads.poll();
+        // not while typing, nor in the frame after (the Escape that ended it isn't a Back too)
+        if self.screen == Screen::Settings && !ctx.wants_keyboard_input() && !self.typed {
+            ctx.input_mut(|i| {
+                for (key, n) in [
+                    (egui::Key::ArrowUp, Nav::Up),
+                    (egui::Key::ArrowDown, Nav::Down),
+                    (egui::Key::ArrowLeft, Nav::Left),
+                    (egui::Key::ArrowRight, Nav::Right),
+                    (egui::Key::Enter, Nav::Accept),
+                    (egui::Key::Space, Nav::Accept),
+                    (egui::Key::Escape, Nav::Back),
+                ] {
+                    // taken, so the Enter that opens the text box doesn't also type into it
+                    if i.consume_key(egui::Modifiers::NONE, key) {
+                        v.push(n);
+                    }
+                }
+            });
+        }
+        v
+    }
+
+    /// The resolutions to step through: the usual ones, and the one set now if it's another.
+    fn resolutions(&self) -> Vec<(u32, u32)> {
+        let mut v = settings::RESOLUTIONS.to_vec();
+        let now = (self.cfg.game.width, self.cfg.game.height);
+        if !v.contains(&now) {
+            v.insert(0, now);
+        }
+        v
+    }
+
+    /// Left (-1) or right (+1) on a row.
+    fn step(&mut self, row: Row, d: i32) {
+        let g = &mut self.cfg.game;
+        let cycle = |i: usize, n: usize| ((i as i32 + d).rem_euclid(n as i32)) as usize;
+        match row {
+            Row::Sound => g.sound = !g.sound,
+            Row::Volume if g.sound => g.volume = (g.volume as i32 + 5 * d).clamp(0, 100) as u8,
+            Row::Resolution => {
+                let list = self.resolutions();
+                let g = &mut self.cfg.game;
+                let i = list.iter().position(|&r| r == (g.width, g.height)).unwrap_or(0);
+                (g.width, g.height) = list[cycle(i, list.len())];
+            }
+            Row::Display => {
+                let all = [Display::Window, Display::Borderless, Display::FullScreen];
+                let i = all.iter().position(|&v| v == g.display).unwrap_or(0);
+                g.display = all[cycle(i, all.len())];
+            }
+            Row::VSync => {
+                let all = [VSync::Game, VSync::On, VSync::Off];
+                let i = all.iter().position(|&v| v == g.vsync).unwrap_or(0);
+                g.vsync = all[cycle(i, all.len())];
+            }
+            Row::Api => {
+                let apis = settings::graphics_apis();
+                let i = apis.iter().position(|a| a.0 == g.graphics_api).unwrap_or(0);
+                g.graphics_api = apis[cycle(i, apis.len())].0.to_string();
+            }
+            _ => return,
+        }
+        self.cfg.save();
+    }
+
+    fn accept(&mut self, row: Row, ctx: &egui::Context) {
+        match row {
+            Row::Extra => ctx.memory_mut(|m| m.request_focus(egui::Id::new(EXTRA_ID))),
+            Row::Reset => {
+                self.cfg.game = GameSettings::default();
+                self.cfg.save();
+                self.say("Settings are back to the defaults.", false);
+            }
+            Row::Back => self.close_settings(),
+            Row::Volume => {}
+            r => self.step(r, 1),
+        }
+    }
+
+    fn value_text(&self, row: Row) -> String {
+        let g = &self.cfg.game;
+        match row {
+            Row::Sound if MUTE.load(std::sync::atomic::Ordering::Relaxed) => "Off for this run (--mute)".into(),
+            Row::Sound => if g.sound { "On" } else { "Off" }.into(),
+            Row::Volume if !g.sound => "—".into(),
+            Row::Volume => format!("{}%", g.volume),
+            Row::Resolution => {
+                let (w, h) = g.size();
+                if (w, h) == (1280, 720) { format!("{w} × {h} (the game's own)") } else { format!("{w} × {h}") }
+            }
+            Row::Display => match g.display {
+                Display::Window => "Window",
+                Display::Borderless => "Borderless window",
+                Display::FullScreen => "Full screen",
+            }
+            .into(),
+            Row::VSync => match g.vsync {
+                VSync::Game => "As the game asks (on)",
+                VSync::On => "On",
+                VSync::Off => "Off",
+            }
+            .into(),
+            Row::Api => settings::graphics_apis()
+                .iter()
+                .find(|a| a.0 == g.graphics_api)
+                .map_or("Automatic", |a| a.1)
+                .into(),
+            _ => String::new(),
+        }
+    }
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, navs: &[Nav]) {
+        let rows = Row::all();
+        self.row = self.row.min(rows.len() - 1);
+        let extra_id = egui::Id::new(EXTRA_ID);
+        let typing = ctx.memory(|m| m.has_focus(extra_id));
+        for &n in navs {
+            let row = rows[self.row];
+            match n {
+                // B or Escape in the text box: leave the box (Escape already does, in egui)
+                Nav::Back if typing => ctx.memory_mut(|m| m.surrender_focus(extra_id)),
+                Nav::Back | Nav::Menu => self.close_settings(),
+                _ if typing => {}
+                Nav::Up => {
+                    self.row = (self.row + rows.len() - 1) % rows.len();
+                    self.row_moved = true;
+                }
+                Nav::Down => {
+                    self.row = (self.row + 1) % rows.len();
+                    self.row_moved = true;
+                }
+                Nav::Left => self.step(row, -1),
+                Nav::Right => self.step(row, 1),
+                Nav::Accept => self.accept(row, ctx),
+            }
+        }
+        if self.screen != Screen::Settings {
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Settings").strong());
+            ui.weak("Used each time you Join.");
+        });
+        let help = if self.pads.connected() {
+            "D-pad: choose and change  ·  A: select  ·  B: back"
+        } else {
+            "Arrow keys: choose and change  ·  Enter: select  ·  Esc: back"
+        };
+        ui.weak(help);
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            for (i, &row) in rows.iter().enumerate() {
+                let selected = i == self.row;
+                let frame = egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .corner_radius(4.0)
+                    .fill(if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.35) } else { egui::Color32::TRANSPARENT })
+                    .stroke(if selected { egui::Stroke::new(1.0, ACCENT) } else { egui::Stroke::NONE });
+                let resp = frame
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.settings_row(ui, ctx, row, selected);
+                    })
+                    .response;
+                if selected && self.row_moved {
+                    resp.scroll_to_me(None);
+                }
+                if resp.interact(egui::Sense::click()).clicked() {
+                    self.row = i;
+                }
+            }
+        });
+        self.row_moved = false;
+        self.typed = ctx.memory(|m| m.has_focus(extra_id));
+    }
+
+    fn settings_row(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, row: Row, selected: bool) {
+        let label = |ui: &mut egui::Ui, t: &str| {
+            let text = egui::RichText::new(t);
+            let text = if selected { text.color(ACCENT) } else { text };
+            ui.allocate_ui_with_layout(egui::vec2(150.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_width(150.0);
+                ui.label(text);
+            });
+        };
+        let chooser = |app: &mut App, ui: &mut egui::Ui, row: Row, enabled: bool| {
+            if ui.add_enabled(enabled, egui::Button::new("◀").small()).clicked() {
+                app.step(row, -1);
+            }
+            ui.add_sized([210.0, 22.0], egui::Label::new(app.value_text(row)));
+            if ui.add_enabled(enabled, egui::Button::new("▶").small()).clicked() {
+                app.step(row, 1);
+            }
+        };
+        let muted = MUTE.load(std::sync::atomic::Ordering::Relaxed);
+        match row {
+            Row::Sound => {
+                ui.horizontal(|ui| {
+                    label(ui, "Sound");
+                    chooser(self, ui, row, !muted);
+                });
+            }
+            Row::Volume => {
+                ui.horizontal(|ui| {
+                    label(ui, "Volume");
+                    chooser(self, ui, row, self.cfg.game.sound && !muted);
+                });
+            }
+            Row::Resolution => {
+                ui.horizontal(|ui| {
+                    label(ui, "Resolution");
+                    chooser(self, ui, row, true);
+                });
+            }
+            Row::Display => {
+                ui.horizontal(|ui| {
+                    label(ui, "Display");
+                    chooser(self, ui, row, true);
+                });
+                match self.cfg.game.display {
+                    Display::Window => {}
+                    Display::Borderless => {
+                        ui.weak("A window without a frame at the display's top left; at the display's own size it covers it.");
+                    }
+                    Display::FullScreen => {
+                        ui.weak("Covers the whole display without changing its mode; the game draws at the resolution above, scaled.");
+                    }
+                }
+            }
+            Row::VSync => {
+                ui.horizontal(|ui| {
+                    label(ui, "VSync");
+                    chooser(self, ui, row, true);
+                });
+            }
+            Row::Api => {
+                ui.horizontal(|ui| {
+                    label(ui, "Graphics API");
+                    chooser(self, ui, row, true);
+                });
+            }
+            Row::Extra => {
+                label(ui, "Extra switches (advanced)");
+                ui.weak("For tests: one per line, NAME=value (NAME= clears one set with setx). setx and set lines can be pasted as they are.");
+                let edit = egui::TextEdit::multiline(&mut self.cfg.game.extra_env)
+                    .id(egui::Id::new(EXTRA_ID))
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("for example  XIVLEGACY_CPUSETS=0")
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY);
+                let r = ui.add(edit);
+                if r.changed() {
+                    self.cfg.save();
+                }
+                if r.has_focus() {
+                    ui.weak(if self.pads.connected() {
+                        "B: done typing (Steam Deck: Steam + X shows the keyboard)"
+                    } else {
+                        "Esc: done typing"
+                    });
+                }
+                let (_, bad) = settings::parse_extra(&self.cfg.game.extra_env);
+                for b in bad {
+                    ui.colored_label(egui::Color32::from_rgb(240, 110, 100), format!("Line {} isn't NAME=value, so it's skipped: {}", b.line, b.text));
+                }
+                let _ = ctx;
+            }
+            Row::Reset => {
+                ui.horizontal(|ui| {
+                    label(ui, "");
+                    if ui.button("Reset to defaults").clicked() {
+                        self.accept(row, ctx);
+                    }
+                });
+            }
+            Row::Back => {
+                ui.horizontal(|ui| {
+                    label(ui, "");
+                    if ui.button(egui::RichText::new("Back").strong()).clicked() {
+                        self.close_settings();
+                    }
+                });
+            }
         }
     }
 }

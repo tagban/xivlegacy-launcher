@@ -54,6 +54,38 @@ connection.
 The title screen logs in to the lobby by itself; Start opens "A Word to Our Players", whose default
 button is No.
 
+## Settings and muted test clients
+
+The launcher's Settings screen (the footer's Settings…, or Start on a gamepad) is applied at each
+Join, through what the game and the client already read:
+
+| Setting | How it reaches the game |
+|---|---|
+| Resolution; Window, Borderless window | the game's own `Documents\My Games\FINAL FANTASY XIV\config.sys` (below) |
+| Full screen | config.sys's full-screen flag plus `XIVLEGACY_FULLSCREEN=1`: the frameless window covers the display at any resolution, the picture scaled; the display's mode is never changed |
+| Sound off | `XIVLEGACY_NOAUDIO=1`: no audio device; the engine runs on the clock, so the game behaves the same |
+| Volume | `XIVLEGACY_VOLUME=0`-`100`: the gain of the client's one output stream |
+| VSync | `XIVLEGACY_VSYNC=0` / `1`, over the game's own present interval (Metal and wgpu) |
+| Graphics API (Windows, Linux) | `XIVLEGACY_WGPU_BACKEND` |
+| Extra switches | any `NAME=value` lines, set for the game after the ones above; `NAME=` clears one set with `setx`. `set`, `setx` and `export` lines are taken as they are |
+
+The launcher logs what it set (`settings:` and `game switches:` in launcher.log).
+
+config.sys is what ffxivconfig.exe writes; ffxivgame.exe reads it at start-up (0x405C90, version
+0x20120419, 0xE0 bytes of little-endian u32s and two UTF-16 strings). +0x10 is 0 for a window with a
+frame, otherwise full screen (a frameless window at 0,0); +0x14 and +0x18 are the resolution, which
+the game raises to at least 1024x720. Without the file the game uses 1280x720 in a window. The
+launcher changes only those three fields of a file that is there. The game's own full screen is, on
+our client, a frameless window at the resolution at the display's top left (Borderless window); it
+covers the display only at the display's own size, or with `XIVLEGACY_FULLSCREEN=1`.
+
+**Starting muted.** Test clients and scripts:
+
+- the host: `xivlegacy-host --mute --module ...`, or `XIVLEGACY_NOAUDIO=1` (any value but `0`);
+- the launcher: `XIVLegacy --mute` (on a Mac,
+  `/Applications/XIVLegacy.app/Contents/MacOS/XIVLegacy --mute`) mutes the games it starts in that run,
+  whatever Settings say. `XIVLEGACY_NOAUDIO=1` in the launcher's environment reaches the game as well.
+
 ## Switches for debugging
 
 | Variable | |
@@ -78,7 +110,8 @@ button is No.
 | `XIVLEGACY_FILELOG`, `XIVLEGACY_MSGLOG`, `XIVLEGACY_SENDSTACK=<len>`, `XIVLEGACY_FIBERLOG` | files opened, window messages, the stack of sends of a length, fiber switches |
 | `XIVLEGACY_CASTCHECK=1` | as each drain starts, the game's own `dynamic_cast<CharaActor>` of every queued actor compared with its RTTI (`[actors] dynamic_cast...` on a mismatch) |
 | `XIVLEGACY_ACTORLOG=1` | every actor the deferred-delete guard drops from a delete batch (`[actors]`), the actor's own slot too, and queued actors at an address freed once (a hint only); without it only the drops and cleared effect controllers that matter are logged |
-| `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal |
+| `XIVLEGACY_NOAUDIO`, `XIVLEGACY_NOGFX` | run without the audio device / without Metal (`XIVLEGACY_NOAUDIO=0` keeps the sound) |
+| `XIVLEGACY_VOLUME=<0-100>`, `XIVLEGACY_VSYNC=0` / `1`, `XIVLEGACY_FULLSCREEN=1` | the sound's loudness; VSync over the game's choice; the game's full-screen window covers the display (Settings) |
 | `MTL_DEBUG_LAYER=1` | Metal's API validation |
 | `XIVLEGACY_MONSTERCAM=0` / `=2` | Monster Mode camera: off (a person's distances for any body) / log each body and its scale (`[monstercam]`) |
 | `XIVLEGACY_ACTORLOOKUP=0` | Leave the camera's actor-by-id lookups unchecked (the `[actors] id lookup` check, `actor_lookup` hook): to rule it out |

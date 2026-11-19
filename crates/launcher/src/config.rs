@@ -30,6 +30,8 @@ pub struct Config {
     /// The Desktop and Start menu shortcuts were made (Windows; see shortcut.rs). Once, so a
     /// player who deletes them isn't given them back.
     pub shortcuts: bool,
+    /// The game's settings (Settings screen), applied at Join.
+    pub game: crate::settings::GameSettings,
 }
 
 impl Default for Config {
@@ -41,6 +43,7 @@ impl Default for Config {
             username: String::new(),
             remember: true,
             shortcuts: false,
+            game: Default::default(),
         }
     }
 }
