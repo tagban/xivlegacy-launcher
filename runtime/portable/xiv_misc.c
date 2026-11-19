@@ -621,6 +621,13 @@ static volatile int g_screen; /* the loading screen is up */
 #define PACE_TICK_MAX_MS 15u
 static volatile uint32_t g_frame_gen, g_pace_waiting, g_tick_done;
 static uint32_t g_pace_seen; /* the main loop's: the frame its last tick followed */
+/* XIVLEGACY_FRAMESTATS: the drawing thread's time waiting for the main loop's tick, and napping
+ * while loading or answering a tap (xiv_loading_poll) */
+static uint64_t g_pace_tick_ns, g_nap_ns;
+void xiv_pace_costs(uint64_t* tick_ns, uint64_t* nap_ns)
+{
+    *tick_ns = g_pace_tick_ns, *nap_ns = g_nap_ns;
+}
 static int g_pace = -1;
 
 void xiv_set_pace(int on) { g_pace = on != 0; }
@@ -677,7 +684,7 @@ void xiv_pace_frame(void)
     /* the main loop's whole tick before the next frame: with the guest lock's short turns a tick was
      * cut in pieces a frame apart, and each spanned two frames. Other threads take turns meanwhile. */
     gt_unlock();
-    uint64_t until = rt_monotonic_ns() + PACE_TICK_MAX_MS * 1000000ull;
+    uint64_t t0 = rt_monotonic_ns(), until = t0 + PACE_TICK_MAX_MS * 1000000ull;
     for (;;)
     {
         uint64_t now = rt_monotonic_ns();
@@ -685,6 +692,7 @@ void xiv_pace_frame(void)
             break;
         plat_wait32_ms(&g_tick_done, done, (uint32_t)((until - now + 999999) / 1000000));
     }
+    g_pace_tick_ns += rt_monotonic_ns() - t0;
     gt_lock();
 }
 static uint32_t loading_sleep_filter(uint32_t site, uint32_t ms)
@@ -732,7 +740,9 @@ void xiv_loading_poll(void)
     if (loading)
     {
         gt_unlock();
+        uint64_t t0 = rt_monotonic_ns();
         plat_sleep_ms(LOADING_NAP_MS);
+        g_nap_ns += rt_monotonic_ns() - t0;
         gt_lock();
     }
 }

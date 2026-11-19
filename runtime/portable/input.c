@@ -134,8 +134,10 @@ static void push(int kind, uint32_t ofs, uint32_t data)
 static volatile uint64_t g_last_press;
 static volatile uint32_t g_press_id, g_press_held; /* which control went down last (kind << 16 | code) */
 /* Taps (xiv_misc.c answers them fast): a control let go within TAP_NS of going down. Not the keys
- * that move (W A S D Q E: a short step), and not a mouse button that moved while down (a camera
- * drag): those had the drawing thread nap for two seconds each time, at half the frame rate. */
+ * that move or turn (W A S D Q E, the arrows, the number pad's 1-9 and Num Lock: the FFXI-style
+ * controls 1.0 kept), and not a mouse button that moved while down (a camera drag): those had the
+ * drawing thread nap 30 ms a frame for two seconds or more each time, at half the frame rate
+ * (Windows speed tests: running on the number pad with arrow-key turns, 12-14 fps -> 22-27). */
 #define TAP_NS 300000000ull
 static volatile uint64_t g_last_tap;
 static volatile uint32_t g_last_tap_id, g_press_moved;
@@ -144,6 +146,9 @@ static int tap_counts(uint32_t id)
     switch (id)
     {
     case 0x10: case 0x11: case 0x12: case 0x1E: case 0x1F: case 0x20: /* DIK Q W E A S D */
+    case 0xC8: case 0xCB: case 0xCD: case 0xD0:                       /* the arrows */
+    case 0x47: case 0x48: case 0x49: case 0x4B: case 0x4C: case 0x4D: /* number pad 7 8 9 4 5 6 */
+    case 0x4F: case 0x50: case 0x51: case 0x45:                       /* number pad 1 2 3, Num Lock */
         return 0;
     }
     return !((id >> 16) == 1 && g_press_moved > 8); /* a mouse button: not dragged */

@@ -45,6 +45,8 @@ extern int (*k32_sleep_wait)(uint32_t site, uint32_t ms);
 void k32_spin_yield(void);
 /* xiv_misc.c: the drawing thread presented a frame (frame pacing); its switch for tests */
 void xiv_pace_frame(void);
+/* the drawing thread's total time waiting for the main loop's tick, and napping while loading */
+void xiv_pace_costs(uint64_t* tick_ns, uint64_t* nap_ns);
 void xiv_set_pace(int on);
 /* d3d9.c: Direct3D 9 (in progress). */
 void d3d9_init(void);

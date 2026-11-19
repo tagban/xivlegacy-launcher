@@ -155,7 +155,13 @@ pub const PROFILES: &[Profile] = &[
     Profile { name: "Speed test D (NOPBUF=1)", tag: "speed D", env: &[MEASURE, ("XIVLEGACY_NOPBUF", "1")] },
     Profile { name: "Speed test E (SPINNAP=0)", tag: "speed E", env: &[MEASURE, ("XIVLEGACY_SPINNAP", "0")] },
     Profile { name: "Speed test F (LOCKWAKE=all)", tag: "speed F", env: &[MEASURE, ("XIVLEGACY_LOCKWAKE", "all")] },
-    Profile { name: "Speed test G (WGPU_BACKEND=dx12)", tag: "speed G", env: &[MEASURE, ("XIVLEGACY_WGPU_BACKEND", "dx12")] },
+    Profile { name: "Speed test G (WGPU_BACKEND=vulkan)", tag: "speed G", env: &[MEASURE, ("XIVLEGACY_WGPU_BACKEND", "vulkan")] },
+    /* frame pacing off (the drawing thread doesn't wait for the main loop's tick), and the loading
+     * naps off (no 30 ms nap a frame while loading or answering a tap) */
+    Profile { name: "Speed test H (FRAMEPACE=0)", tag: "speed H", env: &[MEASURE, ("XIVLEGACY_FRAMEPACE", "0")] },
+    Profile { name: "Speed test I (SLOW_LOADING=1)", tag: "speed I", env: &[MEASURE, ("XIVLEGACY_SLOW_LOADING", "1")] },
+    /* Windows: the sampling profiler (host_win.c), 2 minutes from a minute after the start */
+    Profile { name: "Speed test P (profile)", tag: "speed P", env: &[MEASURE, ("XIVLEGACY_PROFILE", "120:60")] },
 ];
 
 /// What the environment list leaves set, in order (later wins): name -> value, None unset.
@@ -477,9 +483,10 @@ mod tests {
         // the extra box still wins
         g.extra_env = "XIVLEGACY_PARALLEL=".into();
         assert_eq!(resolve(&g.env(false, b)).get("XIVLEGACY_PARALLEL"), Some(&None));
-        // every profile's tag is "speed <letter>", A to G in order
+        // every profile's tag is "speed <letter>": A to I in order, then P (the profiler)
         for (i, p) in PROFILES.iter().enumerate().skip(1) {
-            assert_eq!(p.tag, format!("speed {}", (b'A' + i as u8 - 1) as char));
+            let letter = if i <= 9 { (b'A' + i as u8 - 1) as char } else { 'P' };
+            assert_eq!(p.tag, format!("speed {}", letter));
         }
     }
 

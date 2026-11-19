@@ -264,11 +264,47 @@ static void shimcount(uint32_t target)
 static RT_TLS uint32_t t_shim_now;
 uint32_t thunk_current(void) { return t_shim_now; }
 
+/* the same, readable from another thread (the Windows sampling profiler): per thread slot, the
+ * outermost shim it is in and the game's call site. Plain stores, read without a lock: a sample
+ * may see one call's shim with another's site, which a profile can live with. */
+#define SHIM_SLOTS 128
+static struct { volatile uint32_t tid, shim, site; } g_shim_slot[SHIM_SLOTS];
+static RT_TLS int t_shim_slot = -1;
+uint32_t thunk_current_of(uint32_t tid, uint32_t* site)
+{
+    for (int i = 0; i < SHIM_SLOTS; ++i)
+        if (g_shim_slot[i].tid == tid)
+        {
+            if (site)
+                *site = g_shim_slot[i].site;
+            return g_shim_slot[i].shim;
+        }
+    return 0;
+}
+static void shim_slot_set(uint32_t shim, uint32_t site)
+{
+    if (t_shim_slot < 0)
+    {
+        uint32_t tid = plat_thread_id();
+        t_shim_slot = SHIM_SLOTS; /* full: don't look again */
+        for (int i = 0; i < SHIM_SLOTS; ++i)
+            if (plat_atomic_cas32(&g_shim_slot[i].tid, 0, tid) == 0)
+            {
+                t_shim_slot = i;
+                break;
+            }
+    }
+    if (t_shim_slot < SHIM_SLOTS)
+        g_shim_slot[t_shim_slot].site = site, g_shim_slot[t_shim_slot].shim = shim;
+}
+
 static int dispatch_shim(Guest* g, uint32_t target);
 static int dispatch(Guest* g, uint32_t target)
 {
     uint32_t outer = t_shim_now;
     t_shim_now = target;
+    if (!outer)
+        shim_slot_set(target, rd32(g->esp));
     static int stats = -1;
     if (stats < 0)
         stats = getenv("XIVLEGACY_LOCKSTATS") != NULL;
@@ -276,6 +312,8 @@ static int dispatch(Guest* g, uint32_t target)
     {
         int r = dispatch_shim(g, target);
         t_shim_now = outer;
+        if (!outer)
+            shim_slot_set(0, 0);
         return r;
     }
     /* a shim that kept the guest lock for long (zone loads: holds of seconds, #29) */
@@ -290,6 +328,8 @@ static int dispatch(Guest* g, uint32_t target)
         rt_log("[lockhold] thread %u kept the guest lock %.0f ms in %s\n", plat_thread_id(), ns * 1e-6, nm ? nm : "a stand-in");
     }
     t_shim_now = outer;
+    if (!outer)
+        shim_slot_set(0, 0);
     return r;
 }
 

@@ -3024,7 +3024,9 @@ int g9_init(void* window, int vsync)
         g_surface = make_surface(g_window);
     WGPURequestAdapterOptions ao = { 0 };
     ao.powerPreference = WGPUPowerPreference_HighPerformance;
-    /* XIVLEGACY_WGPU_BACKEND=dx12|vulkan|metal|gl: which API wgpu drives (default: its own pick) */
+    int dx12_default = 0;
+    /* XIVLEGACY_WGPU_BACKEND=dx12|vulkan|metal|gl: which API wgpu drives (default: Direct3D 12 on Windows,
+     * else wgpu's own pick) */
     {
         const char* b = getenv("XIVLEGACY_WGPU_BACKEND");
         if (b && !strcmp(b, "dx12"))
@@ -3035,7 +3037,15 @@ int g9_init(void* window, int vsync)
             ao.backendType = WGPUBackendType_Metal;
         else if (b && !strcmp(b, "gl"))
             ao.backendType = WGPUBackendType_OpenGL;
+#if defined(_WIN32)
+        /* Windows: Direct3D 12 unless asked otherwise. On a 7950X3D with an RTX 4060 in Ul'dah it ran
+         * 17% more frames than Vulkan (20.6 against 17.6 fps at ~1,700 draws, 0.1.29 speed tests);
+         * wgpu's own pick is tried when there's no Direct3D 12 adapter. */
+        else if (!b || !*b)
+            ao.backendType = WGPUBackendType_D3D12, dx12_default = 1;
+#endif
     }
+    (void)dx12_default;
     ao.compatibleSurface = g_surface;
     WGPURequestAdapterCallbackInfo acb = { 0 };
     acb.mode = WGPUCallbackMode_AllowProcessEvents;
@@ -3044,6 +3054,14 @@ int g9_init(void* window, int vsync)
     wgpuInstanceRequestAdapter(g_inst, &ao, acb);
     for (int i = 0; i < 1000 && !g_adapter; ++i)
         wgpuInstanceProcessEvents(g_inst);
+    if (!g_adapter && dx12_default)
+    {
+        rt_log("[gfx9] no Direct3D 12 adapter: trying wgpu's own pick\n");
+        ao.backendType = WGPUBackendType_Undefined;
+        wgpuInstanceRequestAdapter(g_inst, &ao, acb);
+        for (int i = 0; i < 1000 && !g_adapter; ++i)
+            wgpuInstanceProcessEvents(g_inst);
+    }
     if (!g_adapter)
         return 0;
     WGPUFeatureName feats[16];
