@@ -69,8 +69,9 @@ mod embedded {
     include!(concat!(env!("OUT_DIR"), "/host_files.rs"));
 }
 
-/// Windows release builds carry the host inside XIVLegacy.exe: it is written once per version to
-/// the settings folder (bin-<version>) and run from there.
+/// Windows release builds carry the host inside XIVLegacy.exe: it is written to the settings
+/// folder (bin-<version>) and run from there, rewritten whenever its bytes differ (test builds share
+/// a version, and a changed host is often the same size: speed6 ran speed5's host).
 fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
     if embedded::HOST_FILES.is_empty() {
         return Ok(None);
@@ -79,7 +80,9 @@ fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
     std::fs::create_dir_all(&dir)?;
     for (name, bytes) in embedded::HOST_FILES {
         let p = dir.join(name);
-        if p.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+        let same = p.metadata().is_ok_and(|m| m.len() == bytes.len() as u64)
+            && std::fs::read(&p).is_ok_and(|on_disk| on_disk.as_slice() == *bytes);
+        if !same {
             std::fs::write(&p, bytes)?;
         }
     }
