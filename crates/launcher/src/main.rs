@@ -1186,10 +1186,19 @@ impl App {
             return;
         }
 
+        let mut back = false;
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Settings").strong());
             ui.weak("Used each time you Join.");
+            // the mouse's way out without scrolling to the Back row
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                back = ui.button("Back").clicked();
+            });
         });
+        if back {
+            self.close_settings();
+            return;
+        }
         let help = if self.pads.connected() {
             "D-pad: choose and change  ·  A: select  ·  B: back"
         } else {
@@ -1224,7 +1233,9 @@ impl App {
                 if selected && self.row_moved {
                     resp.scroll_to_me(None);
                 }
-                if resp.interact(egui::Sense::click()).clicked() {
+                // a click anywhere in a row selects it; read from the pointer, not a widget, since a
+                // click area laid over the row would take the clicks of its buttons and text box
+                if ui.input(|inp| inp.pointer.primary_clicked() && inp.pointer.interact_pos().is_some_and(|p| resp.rect.contains(p))) {
                     self.row = i;
                 }
             }
