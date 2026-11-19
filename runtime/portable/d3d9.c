@@ -1550,7 +1550,14 @@ static void sh_D3D9_CreateDevice(Guest* g)
     g_dev->window = window;
     g_dev->o = obj_new(K_DEVICE);
     g_dev->cursor_shown = 1;
-    g9_init(user32_sdl_window(window), rd32(pp + D3DPRESENT_PARAMETERS_PresentationInterval) != 0x80000000u);
+    {
+        /* XIVLEGACY_VSYNC=0 or 1: over the game's own choice (D3DPRESENT_INTERVAL_IMMEDIATE is off) */
+        int vsync = rd32(pp + D3DPRESENT_PARAMETERS_PresentationInterval) != 0x80000000u;
+        const char* e = getenv("XIVLEGACY_VSYNC");
+        if (e && (*e == '0' || *e == '1'))
+            vsync = *e == '1', rt_log("[d3d9] VSync %s (XIVLEGACY_VSYNC)\n", vsync ? "on" : "off");
+        g9_init(user32_sdl_window(window), vsync);
+    }
     Obj* sc = obj_new(K_SWAPCHAIN);
     g_dev->swapchain = sc ? sc->guest : 0;
     make_targets();

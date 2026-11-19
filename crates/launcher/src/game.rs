@@ -89,7 +89,7 @@ fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
 /// Starts our own client: the host with the game module this machine made. It takes the game
 /// folder and the session id, builds the game's launch argument itself, and sends the lobby to
 /// XIVLEGACY_LOBBY. Reports a game that closes within 30 seconds.
-pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Path) -> Result<()> {
+pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Path, env: &[(String, Option<String>)]) -> Result<()> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -122,6 +122,22 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
         .env("XIVLEGACY_LAUNCHER_LOG", crate::config::dir().join("launcher.log"))
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    // the Settings screen's switches, after ours so a test can override them
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    // the log says what's set, and what was cleared from this launcher's own environment (setx)
+    let last: std::collections::BTreeMap<&str, Option<&str>> = env.iter().map(|(k, v)| (k.as_str(), v.as_deref())).collect();
+    let set: Vec<String> = last.iter().filter_map(|(k, v)| v.map(|v| format!("{k}={v}"))).collect();
+    let cleared: Vec<&str> = last.iter().filter(|(k, v)| v.is_none() && std::env::var_os(k).is_some()).map(|(k, _)| *k).collect();
+    crate::config::log(&format!(
+        "game switches: {}{}",
+        if set.is_empty() { "none".to_string() } else { set.join(" ") },
+        if cleared.is_empty() { String::new() } else { format!(" (cleared: {})", cleared.join(" ")) }
+    ));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -144,9 +160,9 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
 }
 
 #[cfg(windows)]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>, env: &[(String, Option<String>)]) -> Result<()> {
     if let Some(m) = module {
-        return launch_native(game_dir, host, session_id, m);
+        return launch_native(game_dir, host, session_id, m, env);
     }
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
@@ -291,13 +307,13 @@ pub fn exit_meaning(code: u32) -> &'static str {
 
 /// macOS: always our own client.
 #[cfg(target_os = "macos")]
-pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>) -> Result<()> {
+pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>, env: &[(String, Option<String>)]) -> Result<()> {
     use anyhow::Context;
-    launch_native(game_dir, host, session_id, module.context("no game module")?)
+    launch_native(game_dir, host, session_id, module.context("no game module")?, env)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn launch(_game_dir: &Path, host: &str, session_id: &str, _module: Option<&Path>) -> Result<()> {
+pub fn launch(_game_dir: &Path, host: &str, session_id: &str, _module: Option<&Path>, _env: &[(String, Option<String>)]) -> Result<()> {
     host_slot(host)?;
     crate::sqex::launch_arg(session_id, 0)?;
     bail!("Starting the game isn't supported on this system yet.")

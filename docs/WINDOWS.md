@@ -30,6 +30,18 @@ all the game gives up and quits after about 30 frames.
 
 ## Switches worth knowing
 
+The launcher's Settings screen has an "Extra switches" box: lines like `XIVLEGACY_CPUSETS=0` there
+are set for the game at each Join, so A/B tests need no `setx` (and `NAME=` there clears a variable
+set with `setx`, for that game only). `setx` lines can be pasted in as they are. launcher.log lists
+what each Join set (`game switches:`).
+
+The common ones need no typing: Settings has a row each for `FRAMESTATS`, `WGPU_STATS`,
+`WGPU_PRESENT`, `MONSTERCAM`, `ACTORLOOKUP`, `PARALLEL`, `CPUSETS`, `NOPBUF`, `SPINNAP` and
+`LOCKWAKE`, and the launch profile beside Join runs one speed test without changing Settings:
+Speed test A (defaults), B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
+G `WGPU_BACKEND=dx12`, each with `FRAMESTATS=1`. Ctrl+F12 in that run opens `!bug speed <letter> `
+for the report. A switch this client does not know is ignored, so an older client is safe.
+
 | Variable | Does |
 | --- | --- |
 | `XIVLEGACY_FRAMESTATS=1` | frame time statistics in the log |
@@ -37,7 +49,8 @@ all the game gives up and quits after about 30 frames.
 | `XIVLEGACY_WGPU_BACKEND=dx12` / `vulkan` | which API wgpu drives (default: wgpu's pick, Vulkan on most PCs) |
 | `XIVLEGACY_WGPU_PRESENT=fifo` / `mailbox` / `immediate` | present mode (vsync or not) |
 | `XIVLEGACY_WGPU_STATS=1` | per-frame wgpu costs (passes and what ended them, uploads, static buffers made) |
-| `XIVLEGACY_NOAUDIO=1` | no audio device (to tell audio stalls from graphics ones) |
+| `XIVLEGACY_NOAUDIO=1` | no audio device (to tell audio stalls from graphics ones); Settings' Sound Off sets it |
+| `XIVLEGACY_VSYNC=0` / `1` | VSync over the game's choice, any back end; Settings' VSync sets it |
 | `XIVLEGACY_STOCK=1` (launcher) | start the 2010 ffxivgame.exe instead of our client |
 | `XIVLEGACY_CPUSETS=0` / `threads` | on a CPU whose L3 caches differ in size (Ryzen X3D) the process prefers the cores under the largest one (CPU Sets; logged as `[host] cpu sets`). `0`: Windows' choice; `threads`: only the drawing thread and the main loop |
 | `XIVLEGACY_NOPBUF=1` | every draw copies its vertices and indices into the frame's upload ring again (default: buffers the game made without `D3DUSAGE_DYNAMIC` are kept on the GPU and drawn from) |

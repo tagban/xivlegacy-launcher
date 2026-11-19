@@ -782,11 +782,26 @@ static void restore_size(Wnd* w)
     SDL_SetWindowPosition(w->sdl, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 }
 
+/* XIVLEGACY_FULLSCREEN=1 (the launcher's Display: Full screen): the game's frameless full-screen
+ * window covers the display at any resolution, the picture scaled to it. Without it a frameless
+ * window smaller than the display stays that size at 0,0 (Display: Borderless). */
+static int want_fullscreen(void)
+{
+    const char* e = getenv("XIVLEGACY_FULLSCREEN");
+    return e && *e && strcmp(e, "0") != 0;
+}
+
 static void apply_frame(Wnd* w)
 {
 #if defined(_WIN32)
     /* Windows: the window is made borderless when created, and placed where the game puts it */
     int popup = (w->style & 0x80000000u) && (w->style & 0x00C00000u) != 0x00C00000u;
+    if (w->sdl && popup && want_fullscreen())
+    {
+        SDL_SetWindowFullscreenMode(w->sdl, NULL);
+        SDL_SetWindowFullscreen(w->sdl, true);
+        return;
+    }
     if (w->sdl && !popup && !w->fullscreen)
     {
         make_resizable(w, 1);
@@ -799,7 +814,7 @@ static void apply_frame(Wnd* w)
     int popup = (w->style & 0x80000000u) && (w->style & 0x00C00000u) != 0x00C00000u; /* WS_POPUP, no WS_CAPTION */
     uint32_t dw, dh, hz;
     user32_desktop_mode(&dw, &dh, &hz);
-    int cover = popup && (uint32_t)w->w >= dw && (uint32_t)w->h >= dh, full = cover || w->fullscreen;
+    int cover = popup && (((uint32_t)w->w >= dw && (uint32_t)w->h >= dh) || want_fullscreen()), full = cover || w->fullscreen;
     /* a macOS Space is only for a window with a frame: full screen hides it anyway */
     int spaces = SDL_GetHintBoolean(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, false);
     SDL_SetWindowBordered(w->sdl, !popup || (full && spaces));
