@@ -39,7 +39,7 @@ The common ones need no typing: Settings has a row each for `FRAMESTATS`, `WGPU_
 `WGPU_PRESENT`, `MONSTERCAM`, `ACTORLOOKUP`, `PARALLEL`, `CPUSETS`, `NOPBUF`, `SPINNAP` and
 `LOCKWAKE`, and the launch profile beside Join runs one speed test without changing Settings:
 Speed test A (defaults), B `PARALLEL=1`, C `CPUSETS=0`, D `NOPBUF=1`, E `SPINNAP=0`, F `LOCKWAKE=all`,
-G `WGPU_BACKEND=vulkan`, each with `FRAMESTATS=1`. Ctrl+F12 in that run opens `!bug speed <letter> `
+G `WGPU_BACKEND=vulkan`, P `PROFILE=120:60` (the sampling profiler: 2 minutes from a minute after the start), each with `FRAMESTATS=1`. Ctrl+F12 in that run opens `!bug speed <letter> `
 for the report. A switch this client does not know is ignored, so an older client is safe.
 
 | Variable | Does |
