@@ -3,6 +3,7 @@
   python3 tools/build.py boot [--game <1.23b install>] [--run]   the game and runtime in one program
   python3 tools/build.py host                                     the runtime alone (XIVLEGACY_SPLIT)
   python3 tools/build.py module [--out <file>]                    the translation as a game module
+  python3 tools/build.py host --windows | --linux                 the host cross-built with zig (x86_64)
 
 The host carries the runtime, graphics, sound, input and networking, with none of the game's code,
 so it can ship; the module is the translation of one player's ffxivgame.exe, made on their machine
@@ -196,8 +197,54 @@ def win_compile(sources, objdir, flags):
     return objs
 
 
+# Linux x86_64, cross-built with zig (`--linux`) for glibc 2.28 and newer: the POSIX runtime (plat_posix.c,
+# tests/boot.c) on wgpu (Vulkan). SDL3 is built from source with the same zig target, X11, Wayland, PipeWire,
+# PulseAudio and ALSA all loaded at run time (docs/LINUX.md), installed at XIVLEGACY_SDL3_LINUX; wgpu-native
+# is its release wgpu-linux-x86_64-release.zip unpacked at XIVLEGACY_WGPU_LINUX, given the SONAME it lacks
+# once (`patchelf --set-soname libwgpu_native.so lib/libwgpu_native.so`; without one the host would name
+# the build machine's path). Both libraries go beside the host, which finds them there ($ORIGIN).
+LINUX_CC = ['zig', 'cc', '-target', 'x86_64-linux-gnu.2.28']
+LINUX_SDL = os.environ.get('XIVLEGACY_SDL3_LINUX', '/Volumes/AppStorage/ffxiv-scratch/deps/sdl3-linux-x64')
+LINUX_WGPU = os.environ.get('XIVLEGACY_WGPU_LINUX', '/Volumes/AppStorage/ffxiv-scratch/deps/wgpu-linux')
+LINUX_CFLAGS = ['-std=c11', '-g', '-DRT_GUEST_WINDOW', '-fno-strict-aliasing', '-D_GNU_SOURCE', '-I', 'runtime',
+                '-I', 'runtime/portable', '-I', LINUX_SDL + '/include', '-I', LINUX_WGPU + '/include',
+                '-I', LINUX_WGPU + '/include/webgpu']
+# (RUNTIME already holds this machine's back end: Metal's files left out, wgpu's taken once)
+LINUX_RUNTIME = list(dict.fromkeys([s for s in RUNTIME if not s.endswith(('.m', 'sm3_msl.c', 'sm3_interp.c'))] + [
+    'runtime/portable/sm3.c', 'runtime/portable/sm3_wgsl.c', 'runtime/portable/gfx9_wgpu.c']))
+LINUX_LIBS = ['-L' + LINUX_SDL + '/lib', '-lSDL3', '-L' + LINUX_WGPU + '/lib', '-lwgpu_native',
+              '-Wl,-rpath,$ORIGIN', '-rdynamic', '-lm', '-lpthread', '-ldl', '-lrt']
+
+
+def cross_compile(cc, sources, objdir, flags):
+    """compile_stale for a zig cross build (its own objects and flags)."""
+    os.makedirs(os.path.join(ROOT, objdir), exist_ok=True)
+    objs, jobs = [], []
+    for src in sources:
+        obj = os.path.join(objdir, os.path.splitext(os.path.basename(src))[0] + '.o')
+        objs.append(obj)
+        a, b = os.path.join(ROOT, src), os.path.join(ROOT, obj)
+        if not os.path.exists(b) or os.path.getmtime(b) < max(os.path.getmtime(a), newest_header(('runtime', 'runtime/portable'))):
+            jobs.append(cc + ['-c'] + flags + [src, '-o', obj])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        bad = [j[-3] for j, r in zip(jobs, ex.map(lambda j: subprocess.call(j, cwd=ROOT), jobs)) if r]
+    if bad:
+        raise SystemExit('failed: ' + ', '.join(bad))
+    return objs
+
+
 def host(args):
     """build/xivlegacy-host: the runtime without the translation; it loads the game with --module."""
+    if args.linux:
+        import shutil
+        flags = LINUX_CFLAGS + ['-O2', '-Wall', '-DXIVLEGACY_SPLIT']  # the Linux test builds: optimized like the module
+        flags_changed('build/linux/obj', flags)
+        objs = cross_compile(LINUX_CC, LINUX_RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c'], 'build/linux/obj', flags)
+        run(LINUX_CC + ['-o', 'build/linux/xivlegacy-host'] + objs + LINUX_LIBS)
+        shutil.copy(os.path.join(LINUX_SDL, 'lib', 'libSDL3.so.0'), os.path.join(ROOT, 'build', 'linux', 'libSDL3.so.0'))
+        shutil.copy(os.path.join(LINUX_WGPU, 'lib', 'libwgpu_native.so'), os.path.join(ROOT, 'build', 'linux', 'libwgpu_native.so'))
+        print('built build/linux/xivlegacy-host (with libSDL3.so.0 and libwgpu_native.so beside it)')
+        return
     if args.windows:
         # unknown attributes are errors: MinGW compilers ignore an unknown __declspec, thread among them
         objs = win_compile(WIN_RUNTIME + WIN_GFX + ['runtime/portable/xiv_load.c'], 'build/win/obj',
@@ -250,6 +297,7 @@ def main():
     ap.add_argument('--run', action='store_true')
     ap.add_argument('--out')
     ap.add_argument('--windows', action='store_true', help='cross-build for Windows x64 with zig')
+    ap.add_argument('--linux', action='store_true', help='cross-build the host for Linux x86_64 with zig')
     args = ap.parse_args()
     {'boot': boot, 'host': host, 'module': module}[args.target](args)
 

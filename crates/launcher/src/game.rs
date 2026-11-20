@@ -42,12 +42,13 @@ pub fn installed(dir: &Path) -> bool {
 }
 
 /// Whether this system's client is our own: the host plus a game module made on this machine.
-/// Always on macOS; on Windows unless XIVLEGACY_STOCK=1 asks for the stock ffxivgame.exe.
+/// Always on macOS and Linux; on Windows unless XIVLEGACY_STOCK=1 asks for the stock ffxivgame.exe.
 pub fn uses_module() -> bool {
-    cfg!(target_os = "macos") || (cfg!(windows) && std::env::var_os("XIVLEGACY_STOCK").is_none())
+    !cfg!(windows) || std::env::var_os("XIVLEGACY_STOCK").is_none()
 }
 
-/// The host program: in the app bundle's Helpers on macOS, beside XIVLegacy.exe on Windows.
+/// The host program: in the app bundle's Helpers on macOS, beside XIVLegacy.exe on Windows (and
+/// beside XIVLegacy on Linux), or carried inside the launcher (Windows and Linux releases).
 fn host_program() -> Result<std::path::PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -69,9 +70,10 @@ mod embedded {
     include!(concat!(env!("OUT_DIR"), "/host_files.rs"));
 }
 
-/// Windows release builds carry the host inside XIVLegacy.exe: it is written to the settings
-/// folder (bin-<version>) and run from there, rewritten whenever its bytes differ (test builds share
-/// a version, and a changed host is often the same size: speed6 ran speed5's host).
+/// Windows and Linux release builds carry the host inside the launcher: it is written to the
+/// settings folder (bin-<version>) and run from there, rewritten whenever its bytes differ (test
+/// builds share a version, and a changed host is often the same size: speed6 ran speed5's host).
+/// On Linux the host finds its libraries (SDL3, wgpu-native) beside itself ($ORIGIN).
 fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
     if embedded::HOST_FILES.is_empty() {
         return Ok(None);
@@ -83,7 +85,15 @@ fn unpack_embedded_host() -> Result<Option<std::path::PathBuf>> {
         let same = p.metadata().is_ok_and(|m| m.len() == bytes.len() as u64)
             && std::fs::read(&p).is_ok_and(|on_disk| on_disk.as_slice() == *bytes);
         if !same {
-            std::fs::write(&p, bytes)?;
+            // written aside and renamed in, so a launcher stopped halfway leaves no short file
+            let part = p.with_extension("part");
+            std::fs::write(&part, bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))?;
+            }
+            std::fs::rename(&part, &p)?;
         }
     }
     Ok(Some(dir.join(embedded::HOST_FILES[0].0)))
@@ -159,6 +169,10 @@ pub fn launch_native(game_dir: &Path, host: &str, session_id: &str, module: &Pat
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    // reaped when it closes, so a finished game leaves no zombie process behind the launcher
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 
@@ -308,18 +322,11 @@ pub fn exit_meaning(code: u32) -> &'static str {
     }
 }
 
-/// macOS: always our own client.
-#[cfg(target_os = "macos")]
+/// macOS and Linux: always our own client.
+#[cfg(not(windows))]
 pub fn launch(game_dir: &Path, host: &str, session_id: &str, module: Option<&Path>, env: &[(String, Option<String>)]) -> Result<()> {
     use anyhow::Context;
     launch_native(game_dir, host, session_id, module.context("no game module")?, env)
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-pub fn launch(_game_dir: &Path, host: &str, session_id: &str, _module: Option<&Path>, _env: &[(String, Option<String>)]) -> Result<()> {
-    host_slot(host)?;
-    crate::sqex::launch_arg(session_id, 0)?;
-    bail!("Starting the game isn't supported on this system yet.")
 }
 
 #[cfg(test)]

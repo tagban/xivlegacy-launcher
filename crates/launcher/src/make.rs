@@ -3,9 +3,10 @@
 //! recompiler and compiles it into the game module the host loads. Nothing of
 //! the game is ever downloaded; the module never leaves this machine.
 //!
-//! The compiler is clang when the machine has one (on a Mac, Xcode's command
-//! line tools), else zig, downloaded once from ziglang.org and checked against
-//! its published SHA-256. Modules are kept per exe and per translation inputs,
+//! The compiler is clang when a Mac has one (Xcode's command line tools), else
+//! zig, downloaded once from ziglang.org and checked against its published
+//! SHA-256. Linux always uses zig, aimed at glibc 2.28 so it compiles with its
+//! own C library headers: a desktop needs no development packages. Modules are kept per exe and per translation inputs,
 //! so a new launcher remakes the game only when the translation changed.
 
 use std::path::{Path, PathBuf};
@@ -52,6 +53,9 @@ fn cflags() -> Vec<&'static str> {
     let mut f = vec!["-std=c11", "-O2", "-fno-strict-aliasing", "-DRT_GUEST_WINDOW", "-fPIC", "-fvisibility=hidden", "-w"];
     if cfg!(target_os = "macos") {
         f.push("-DRT_GUEST_FIXED_BASE=0x10000000000ull"); // tools/build.py says why
+    }
+    if cfg!(target_os = "linux") {
+        f.push("-D_GNU_SOURCE"); // as tools/build.py: glibc hides _longjmp (guest.h) under plain C11
     }
     f
 }
@@ -245,23 +249,25 @@ pub fn ensure(game_dir: &Path, progress: &(dyn Fn(Step, usize, usize) + Sync)) -
     Ok(out)
 }
 
-/// clang if this machine has one, else zig (downloaded once).
+/// clang on a Mac that has it, else zig (downloaded once).
 fn compiler(progress: &(dyn Fn(Step, usize, usize) + Sync)) -> Result<Vec<String>> {
-    if std::env::var_os("XIVLEGACY_USE_ZIG").is_some() {
-        let zig = zig(progress)?;
-        return Ok(vec![zig.to_string_lossy().into_owned(), "cc".into()]);
-    }
     let works = |cmd: &[&str]| quiet(cmd[0]).args(&cmd[1..]).arg("--version").output().is_ok_and(|o| o.status.success());
-    if cfg!(target_os = "macos") {
-        // Only ask xcrun when the command line tools are installed; otherwise macOS offers to install them.
-        if quiet("xcode-select").arg("-p").output().is_ok_and(|o| o.status.success()) && works(&["xcrun", "clang"]) {
-            return Ok(vec!["xcrun".into(), "clang".into()]);
-        }
-    } else if !cfg!(windows) && works(&["clang"]) {
-        return Ok(vec!["clang".into()]);
+    // Only ask xcrun when the command line tools are installed; otherwise macOS offers to install them.
+    if cfg!(target_os = "macos")
+        && std::env::var_os("XIVLEGACY_USE_ZIG").is_none()
+        && quiet("xcode-select").arg("-p").output().is_ok_and(|o| o.status.success())
+        && works(&["xcrun", "clang"])
+    {
+        return Ok(vec!["xcrun".into(), "clang".into()]);
     }
     let zig = zig(progress)?;
-    Ok(vec![zig.to_string_lossy().into_owned(), "cc".into()])
+    let mut cc = vec![zig.to_string_lossy().into_owned(), "cc".into()];
+    if cfg!(target_os = "linux") {
+        // zig's own glibc headers and stubs, not the system's (which a desktop often lacks); the
+        // module still loads into the host against the system's glibc
+        cc.extend(["-target".into(), format!("{}-linux-gnu.2.28", std::env::consts::ARCH)]);
+    }
+    Ok(cc)
 }
 
 struct ZigBuild {

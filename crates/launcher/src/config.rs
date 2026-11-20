@@ -1,6 +1,9 @@
 //! What the launcher remembers: the game folder, the servers and who signed in
 //! last. Passwords are not here; they go to the system's credential store
-//! (Windows Credential Manager, the macOS keychain) when "Remember me" is on.
+//! (Windows Credential Manager, the macOS keychain, the Secret Service on
+//! Linux) when "Remember me" is on. A Linux desktop without a Secret Service
+//! keeps them in passwords.json in the settings folder, readable only by the
+//! player.
 
 use std::fs;
 use std::path::PathBuf;
@@ -48,12 +51,16 @@ impl Default for Config {
     }
 }
 
-/// %APPDATA%\XIVLegacy on Windows, ~/Library/Application Support/XIVLegacy on macOS.
+/// %APPDATA%\XIVLegacy on Windows, ~/Library/Application Support/XIVLegacy on macOS,
+/// $XDG_DATA_HOME/XIVLegacy (~/.local/share/XIVLegacy) on Linux: besides the settings it holds
+/// the game module, zig and the logs, which are data rather than configuration.
 pub fn dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("XIVLegacy")
+    let base = if cfg!(target_os = "linux") { dirs::data_dir() } else { dirs::config_dir() };
+    base.unwrap_or_else(|| PathBuf::from(".")).join("XIVLegacy")
 }
 
-/// Where a new install goes: %LOCALAPPDATA%\XIVLegacy\FINAL FANTASY XIV 1.23b.
+/// Where a new install goes: %LOCALAPPDATA%\XIVLegacy\FINAL FANTASY XIV 1.23b
+/// (~/.local/share/XIVLegacy/FINAL FANTASY XIV 1.23b on Linux).
 pub fn default_game_dir() -> PathBuf {
     dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join("XIVLegacy").join("FINAL FANTASY XIV 1.23b")
 }
@@ -99,11 +106,15 @@ pub fn log(line: &str) {
 /// The saved password for (server, user), if any. On macOS, the earlier Mac
 /// launcher's keychain entry (service "XIVLegacy", one password per user) is
 /// taken over the first time.
+#[allow(unreachable_code)]
 pub fn password(host: &str, user: &str) -> Option<String> {
-    if let Some(p) = keyring::Entry::new(&format!("XIVLegacy {host}"), user).ok()?.get_password().ok() {
+    if let Some(p) = keyring::Entry::new(&format!("XIVLegacy {host}"), user).ok().and_then(|e| e.get_password().ok()) {
         return Some(p);
     }
-    if cfg!(target_os = "macos") {
+    #[cfg(target_os = "linux")]
+    return file_store::get(host, user);
+    #[cfg(target_os = "macos")]
+    {
         let old = keyring::Entry::new("XIVLegacy", user).ok()?.get_password().ok()?;
         set_password(host, user, Some(&old));
         return Some(old);
@@ -112,9 +123,71 @@ pub fn password(host: &str, user: &str) -> Option<String> {
 }
 
 pub fn set_password(host: &str, user: &str, password: Option<&str>) {
-    let Ok(e) = keyring::Entry::new(&format!("XIVLegacy {host}"), user) else { return };
-    let _ = match password {
+    let stored = keyring::Entry::new(&format!("XIVLegacy {host}"), user).and_then(|e| match password {
         Some(p) => e.set_password(p),
-        None => e.delete_credential(),
-    };
+        None => e.delete_credential().or_else(|e| if matches!(e, keyring::Error::NoEntry) { Ok(()) } else { Err(e) }),
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = stored;
+    #[cfg(target_os = "linux")]
+    {
+        // no Secret Service (a desktop without GNOME Keyring or KWallet, or none running): the file
+        if let Err(e) = &stored {
+            if password.is_some() {
+                log(&format!("no Secret Service ({e}); keeping the password in passwords.json"));
+            }
+        }
+        file_store::set(host, user, if stored.is_ok() { None } else { password });
+    }
+}
+
+#[cfg(target_os = "linux")]
+/// Linux without a Secret Service: passwords.json in the settings folder, mode 0600, so only the
+/// player's own account can read it (as with an SSH key; it is not encrypted).
+mod file_store {
+    use std::collections::BTreeMap;
+
+    fn path() -> std::path::PathBuf {
+        super::dir().join("passwords.json")
+    }
+
+    fn load() -> BTreeMap<String, String> {
+        std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    fn key(host: &str, user: &str) -> String {
+        format!("{user}@{host}")
+    }
+
+    pub fn get(host: &str, user: &str) -> Option<String> {
+        load().remove(&key(host, user))
+    }
+
+    pub fn set(host: &str, user: &str, password: Option<&str>) {
+        let mut all = load();
+        let changed = match password {
+            Some(p) => all.insert(key(host, user), p.to_string()).as_deref() != Some(p),
+            None => all.remove(&key(host, user)).is_some(),
+        };
+        if !changed {
+            return;
+        }
+        if all.is_empty() {
+            let _ = std::fs::remove_file(path());
+            return;
+        }
+        let _ = std::fs::create_dir_all(super::dir());
+        let Ok(json) = serde_json::to_vec_pretty(&all) else { return };
+        let tmp = path().with_extension("json.part");
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        if let Ok(mut f) = opts.open(&tmp) {
+            use std::io::Write;
+            if f.write_all(&json).is_ok() {
+                let _ = std::fs::rename(&tmp, path());
+            }
+        }
+    }
 }

@@ -74,7 +74,8 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("XIVLegacy")
         .with_inner_size([560.0, 500.0])
-        .with_min_inner_size([480.0, 420.0]);
+        .with_min_inner_size([480.0, 420.0])
+        .with_app_id("xivlegacy"); // Linux: matches StartupWMClass in the menu entry (shortcut.rs)
     if let Some(icon) = Config::load().game_dir.and_then(|d| game_icon(&d)) {
         viewport = viewport.with_icon(icon);
     }
@@ -271,10 +272,11 @@ impl App {
         }
     }
 
-    /// The Desktop and Start menu shortcuts with the game's icon (Windows), once: on the first
+    /// The Desktop and Start menu shortcuts with the game's icon (Windows; on Linux the
+    /// applications menu entry), once: on the first
     /// install, or the first start of a version that makes them. The caller saves the config.
     fn make_shortcuts_once(&mut self, game_dir: &Path) {
-        if self.cfg.shortcuts || !cfg!(windows) {
+        if self.cfg.shortcuts || !(cfg!(windows) || cfg!(target_os = "linux")) {
             return;
         }
         self.cfg.shortcuts = true;

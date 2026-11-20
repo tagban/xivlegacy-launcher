@@ -7,6 +7,86 @@
 #include "plat.h"
 #include "vfs.h"
 
+#if defined(__linux__)
+#include <dirent.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include "runtime.h"
+
+/* Linux file systems tell case apart; Windows (the game's) and macOS's do not, and the game asks for
+ * its files in whatever case its code spells them. A host path that doesn't exist as spelled is
+ * looked up a component at a time below the mount's folder (`from` bytes in), each missing one
+ * matched without regard to case; components past the first that doesn't exist at all stay as asked,
+ * so a new file is created in the folder's real case. */
+static void fold_case(char* path, size_t from, size_t n)
+{
+    struct stat st;
+    if (stat(path, &st) == 0 || from >= strlen(path))
+        return;
+    char out[1400];
+    if (from >= sizeof out)
+        return;
+    memcpy(out, path, from);
+    out[from] = 0;
+    size_t o = from;
+    const char* p = path + from;
+    while (*p)
+    {
+        while (*p == '/')
+        {
+            if (o + 1 >= sizeof out)
+                return;
+            out[o++] = *p++;
+        }
+        if (!*p)
+            break;
+        const char* end = strchr(p, '/');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (o + len + 1 >= sizeof out)
+            return;
+        memcpy(out + o, p, len);
+        out[o + len] = 0;
+        if (stat(out, &st) != 0)
+        {
+            /* the folder so far (without the trailing separator) */
+            char dir[1400];
+            memcpy(dir, out, o);
+            dir[o > 1 && out[o - 1] == '/' ? o - 1 : o] = 0;
+            if (!dir[0])
+                strcpy(dir, "/");
+            DIR* d = opendir(dir);
+            int found = 0;
+            for (struct dirent* e; d && (e = readdir(d));)
+                if (strlen(e->d_name) == len && strncasecmp(e->d_name, p, len) == 0)
+                {
+                    memcpy(out + o, e->d_name, len);
+                    found = 1;
+                    break;
+                }
+            if (d)
+                closedir(d);
+            if (!found)
+            {
+                /* the rest as asked */
+                if (o + strlen(p) + 1 >= sizeof out)
+                    return;
+                strcpy(out + o, p);
+                break;
+            }
+        }
+        o += len;
+        p += len;
+    }
+    if (strcmp(out, path) != 0 && strlen(out) < n)
+    {
+        static int logged;
+        if (logged < 20)
+            logged++, rt_log("[vfs] %s -> %s (case)\n", path, out);
+        strcpy(path, out);
+    }
+}
+#endif
+
 #define MAX_MOUNTS 16
 
 static char g_cwd[512] = "C:\\";
@@ -174,8 +254,9 @@ int vfs_host_path(const char* guest, char* host, size_t n)
         if (match)
             best = (int)i, best_len = l;
     }
+    size_t root_len = 0;
     if (best >= 0)
-        snprintf(mapped, sizeof mapped, "%s%s", g_mounts[best].host, full + best_len);
+        root_len = strlen(g_mounts[best].host), snprintf(mapped, sizeof mapped, "%s%s", g_mounts[best].host, full + best_len);
     else if (plat_path_sep == '\\')
         snprintf(mapped, sizeof mapped, "%s", full); /* a Windows host: the guest path is the host path */
     else
@@ -184,7 +265,15 @@ int vfs_host_path(const char* guest, char* host, size_t n)
         for (char* p = mapped; *p; ++p)
             if (*p == '\\')
                 *p = plat_path_sep;
-    return to_utf8(mapped, host, n);
+    if (!to_utf8(mapped, host, n))
+        return 0;
+#if defined(__linux__)
+    if (best >= 0)
+        fold_case(host, root_len, n); /* the mount's own folder is a host path, taken as given */
+#else
+    (void)root_len;
+#endif
+    return 1;
 }
 
 const char* vfs_cwd(void)

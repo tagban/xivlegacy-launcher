@@ -1,7 +1,7 @@
 # XIVLegacy Launcher
 
 FINAL FANTASY XIV 1.23b (the original 2010 game, not A Realm Reborn) as a
-self-contained program for macOS and Windows that connects to the private
+self-contained program for macOS, Windows and Linux that connects to the private
 server you choose, and lives alongside retail FFXIV without touching it.
 
 **Community:** questions, testing and news on the [XIVLegacy Discord](https://discord.gg/D9k3khqvy8).
@@ -77,10 +77,47 @@ Apple Silicon Macs (M1 or later), macOS 13 Ventura or newer.
 When a newer version is out, XIVLegacy says so and links to the releases
 page. Passwords you ask it to remember are kept in the macOS keychain.
 
-## Linux
+## Play on Linux (test builds)
 
-Not yet. The Windows client's graphics (wgpu on Vulkan) are the groundwork
-for a native Linux build.
+The Linux client is new: so far it has only been run in a Debian 13 virtual
+machine, on X11 with software Vulkan, so reports are welcome on the Discord.
+It is built for x86_64 PCs with glibc 2.28 or newer (Ubuntu 20.04, Debian 10,
+Fedora 29, SteamOS 3 and later), on X11 or Wayland.
+
+1. **What your system needs:** a Vulkan driver, and nothing else to install
+   in most desktops. Mesa's drivers cover AMD and Intel (Ubuntu/Debian:
+   `sudo apt install mesa-vulkan-drivers libvulkan1`; Fedora:
+   `sudo dnf install mesa-vulkan-drivers vulkan-loader`; Arch:
+   `sudo pacman -S vulkan-radeon` or `vulkan-intel`); on NVIDIA, the
+   proprietary driver includes Vulkan. `vulkaninfo --summary` (package
+   `vulkan-tools`) shows whether it works. XIVLegacy brings its own SDL3 and
+   wgpu; the window, sound (PipeWire, PulseAudio or ALSA) and controllers come
+   from libraries every desktop already has (libX11 or libwayland, libGL or
+   libEGL for the launcher window, libxkbcommon), plus the desktop's file
+   chooser (xdg-desktop-portal, or `zenity`) for **Browse…**. Unpacking zig
+   needs `tar` and `xz`.
+2. Download **XIVLegacy-linux-x86_64.tar.gz** from the
+   [releases page](https://github.com/tagban/xivlegacy-launcher/releases),
+   unpack it somewhere permanent (such as `~/Games`) and run `XIVLegacy`
+   inside: `tar xzf XIVLegacy-linux-x86_64.tar.gz && ./XIVLegacy/XIVLegacy`.
+3. **First run: game files.** As on Windows: XIVLegacy finds the disc image
+   and patches in your Downloads, Desktop and Documents folders or downloads
+   them (about 11 GB), and builds the game in
+   `~/.local/share/XIVLegacy` (about 12 GB). Already have a 1.23b folder?
+   Choose **I already have the game…**
+4. **First Join: making the game.** A few minutes, once: it downloads the zig
+   compiler (about 50 MB) and compiles your copy of the game for your PC.
+5. **After that: pick a server and Join.** Once the game is installed,
+   XIVLegacy adds itself to your applications menu with the FINAL FANTASY XIV
+   icon.
+
+Everything lives in `~/.local/share/XIVLegacy` (`$XDG_DATA_HOME`): settings,
+the game, the compiled game, and the logs in `logs/` (`launcher.log` beside
+them). Passwords you ask it to remember go to your desktop's keyring (GNOME
+Keyring or KWallet, through the Secret Service); without one they are kept in
+`passwords.json` there, readable only by your account. **Update now** works
+as on Windows: it replaces the `XIVLegacy` program and restarts. Bug reports
+(Ctrl+F12) work as everywhere else.
 
 ## Reporting a bug
 
