@@ -13,6 +13,7 @@
 #include "thunk.h"
 #include "vfs.h"
 #include "xiv_ctimer.h"
+#include "xiv_journalmap.h"
 #include "xiv_logtabs.h"
 #include "xiv_monster_moves.h"
 #include "xiv_monster_points.h"
@@ -215,6 +216,8 @@ static void sh_CreateFileA(Guest* g)
         if (xiv_ctimer_redirect(ARGS(0), host, alt, sizeof alt))
             memcpy(host, alt, sizeof host);
         else if (xiv_monster_points_redirect(ARGS(0), host, alt, sizeof alt))
+            memcpy(host, alt, sizeof host);
+        else if (xiv_journalmap_redirect(ARGS(0), host, alt, sizeof alt))
             memcpy(host, alt, sizeof host);
     }
     PlatStat st;
