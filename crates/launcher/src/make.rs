@@ -166,49 +166,66 @@ pub fn ensure(game_dir: &Path, progress: &(dyn Fn(Step, usize, usize) + Sync)) -
     sources.sort();
     sources.push(inc.join("xiv_module.c"));
     let total = sources.len();
+    let jobs = compile_jobs();
+    crate::config::log(&format!("compiling {total} files, {jobs} at a time"));
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
-    let failed: Mutex<Option<String>> = Mutex::new(None);
+    let failed: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let compile = |src: &Path| -> std::result::Result<(), String> {
+        let o = obj.join(format!("{}.o", src.file_stem().unwrap().to_string_lossy()));
+        let r = quiet(&cc[0])
+            .args(&cc[1..])
+            .arg("-c")
+            .args(cflags())
+            .arg("-I")
+            .arg(&inc)
+            .arg("-I")
+            .arg(&csrc)
+            .arg(src)
+            .arg("-o")
+            .arg(&o)
+            .output();
+        match r {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => Err(format!(
+                "{}: {}",
+                src.display(),
+                String::from_utf8_lossy(&out.stderr).lines().take(5).collect::<Vec<_>>().join("\n")
+            )),
+            Err(e) => Err(format!("running the compiler: {e}")),
+        }
+    };
     progress(Step::Compile, 0, total);
     std::thread::scope(|s| {
-        for _ in 0..std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) {
+        for _ in 0..jobs {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= total || failed.lock().unwrap().is_some() {
+                    if i >= total {
                         return;
                     }
-                    let src = &sources[i];
-                    let o = obj.join(format!("{}.o", src.file_stem().unwrap().to_string_lossy()));
-                    let r = quiet(&cc[0])
-                        .args(&cc[1..])
-                        .arg("-c")
-                        .args(cflags())
-                        .arg("-I")
-                        .arg(&inc)
-                        .arg("-I")
-                        .arg(&csrc)
-                        .arg(src)
-                        .arg("-o")
-                        .arg(&o)
-                        .output();
-                    match r {
-                        Ok(out) if out.status.success() => {
+                    match compile(&sources[i]) {
+                        Ok(()) => {
                             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                             progress(Step::Compile, n, total);
                         }
-                        Ok(out) => {
-                            let msg = String::from_utf8_lossy(&out.stderr).lines().take(5).collect::<Vec<_>>().join("\n");
-                            *failed.lock().unwrap() = Some(format!("{}: {msg}", src.display()));
+                        Err(e) => {
+                            crate::config::log(&format!("will retry alone: {e}"));
+                            failed.lock().unwrap().push(i);
                         }
-                        Err(e) => *failed.lock().unwrap() = Some(format!("running the compiler: {e}")),
                     }
                 }
             });
         }
     });
-    if let Some(e) = failed.into_inner().unwrap() {
-        bail!("compiling the game failed: {e}");
+    // A compiler can fail for want of memory while the others run (zig reports that as
+    // "error: Unexpected" or "LLVM ERROR: out of memory"); try each such file again alone.
+    let mut failed = failed.into_inner().unwrap();
+    failed.sort();
+    for i in failed {
+        compile(&sources[i]).map_err(|e| anyhow::anyhow!("compiling the game failed: {e}"))?;
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress(Step::Compile, n, total);
     }
 
     progress(Step::Link, 0, 1);
@@ -243,6 +260,47 @@ pub fn ensure(game_dir: &Path, progress: &(dyn Fn(Step, usize, usize) + Sync)) -
     crate::config::log(&format!("made {}", out.display()));
     progress(Step::Link, 1, 1);
     Ok(out)
+}
+
+/// How many compilers to run at once: one per CPU thread, but no more than free memory holds.
+/// One compile of the largest generated file peaks near 700 MB (zig adds its own process on
+/// top), so each gets 1 GiB and 1 GiB is left for the launcher and the rest of the computer.
+fn compile_jobs() -> usize {
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    const GIB: u64 = 1 << 30;
+    match free_memory() {
+        Some(free) => {
+            crate::config::log(&format!("{cpus} CPU threads, {} MB memory free", free >> 20));
+            cpus.min((free.saturating_sub(GIB) / GIB).max(1) as usize)
+        }
+        None => cpus,
+    }
+}
+
+/// Memory a new process can still get: on Windows the smaller of free RAM and the commit
+/// charge left (Windows doesn't overcommit, so a small page file runs out first).
+#[cfg(windows)]
+fn free_memory() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut m) } == 0 {
+        return None;
+    }
+    Some(m.ullAvailPhys.min(m.ullAvailPageFile))
+}
+
+#[cfg(target_os = "linux")]
+fn free_memory() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb: u64 = info.lines().find_map(|l| l.strip_prefix("MemAvailable:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// macOS compresses and swaps memory rather than refusing it.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn free_memory() -> Option<u64> {
+    None
 }
 
 /// clang if this machine has one, else zig (downloaded once).
