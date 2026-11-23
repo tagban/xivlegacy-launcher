@@ -56,7 +56,7 @@ pub fn behind_same_router(host: &str) -> Option<Ipv4Addr> {
 /// the server's own router, so it never picks another network's server.
 pub fn find(host: &str, known: Option<&str>) -> Option<String> {
     let server = behind_same_router(host)?;
-    if let Some(k) = known.filter(|k| web::alive(k)) {
+    if let Some(k) = known.filter(|k| web::alive(&web::base(k, false))) {
         return Some(k.to_string());
     }
     let me = interface_ip(server).filter(|ip| ip.is_private())?;
@@ -73,7 +73,7 @@ pub fn find(host: &str, known: Option<&str>) -> Option<String> {
                     }
                     let addr = SocketAddr::from((ip, WEB_PORT));
                     if TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
-                        && web::alive(&ip.to_string())
+                        && web::alive(&web::base(&ip.to_string(), false))
                     {
                         *found.lock().unwrap() = Some(ip.to_string());
                     }

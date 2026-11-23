@@ -17,6 +17,10 @@ pub struct Server {
     /// from here (a home server behind a router without hairpin NAT).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan: Option<String>,
+    /// The server has answered over HTTPS: from then on the launcher won't
+    /// send it a password over plain HTTP.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tls: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +42,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             game_dir: None,
-            servers: vec![Server { name: "XIVLegacy".into(), host: DEFAULT_SERVER.into(), lan: None }],
+            servers: vec![Server { name: "XIVLegacy".into(), host: DEFAULT_SERVER.into(), lan: None, tls: false }],
             server: 0,
             username: String::new(),
             remember: true,

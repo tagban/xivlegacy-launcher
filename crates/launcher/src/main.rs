@@ -119,8 +119,9 @@ enum Msg {
     Installed(Result<PathBuf, String>),
     Checked(Result<(PathBuf, Option<String>), String>),
     Started(Result<(), String>),
-    /// (host, whether it answers, its local address if it answers only there)
-    Alive(String, bool, Option<String>),
+    /// (host, whether it answers, its local address if it answers only there,
+    /// whether it answered over HTTPS)
+    Alive(String, bool, Option<String>, bool),
     Status(String),
     /// Making the game for this computer: (step, done, total)
     Making(make::Step, usize, usize),
@@ -184,6 +185,8 @@ struct App {
     status: String,
     error: bool,
     alive: HashMap<String, bool>,
+    /// Servers that answered over HTTPS on the last check.
+    secure: HashMap<String, bool>,
     polled: Option<Instant>,
     editing: bool,
     new_name: String,
@@ -234,6 +237,7 @@ impl App {
             status: String::new(),
             error: false,
             alive: HashMap::new(),
+            secure: HashMap::new(),
             polled: None,
             editing: false,
             new_name: String::new(),
@@ -375,15 +379,13 @@ impl App {
         let game_settings = self.cfg.game.clone();
         let profile = self.profile;
         let known_lan = self.cfg.servers[self.cfg.server].lan.clone();
+        let pinned_tls = self.cfg.servers[self.cfg.server].tls;
         self.busy = true;
         self.say(if create { "Creating your account…" } else { "Signing in…" }, false);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         thread::spawn(move || {
             let r = (|| -> anyhow::Result<()> {
-                let target = match reach(&host, known_lan.as_deref(), &tx) {
-                    Some(t) => t,
-                    None => anyhow::bail!("The server at {host} didn't answer."),
-                };
+                let target = reach(&host, known_lan.as_deref(), pinned_tls, &tx)?;
                 if create {
                     web::signup(&target, &user, &pass)?;
                 }
@@ -447,11 +449,12 @@ impl App {
         for s in &self.cfg.servers {
             let (tx, ctx, host, lan) = (self.tx.clone(), ctx.clone(), s.host.clone(), s.lan.clone());
             thread::spawn(move || {
-                let msg = if web::alive(&host) {
-                    Msg::Alive(host, true, None)
-                } else {
-                    let local = lan::find(&host, lan.as_deref());
-                    Msg::Alive(host, local.is_some(), local)
+                let msg = match web::probe(&host) {
+                    Some(tls) => Msg::Alive(host, true, None, tls),
+                    None => {
+                        let local = lan::find(&host, lan.as_deref());
+                        Msg::Alive(host, local.is_some(), local, false)
+                    }
                 };
                 let _ = tx.send(msg);
                 ctx.request_repaint();
@@ -513,7 +516,14 @@ impl App {
                     }
                 }
             }
-            Msg::Alive(host, up, local) => {
+            Msg::Alive(host, up, local, tls) => {
+                if tls && self.cfg.servers.iter().any(|s| s.host == host && !s.tls) {
+                    for s in self.cfg.servers.iter_mut().filter(|s| s.host == host) {
+                        s.tls = true;
+                    }
+                    self.cfg.save();
+                }
+                self.secure.insert(host.clone(), tls);
                 if let Some(local) = local {
                     for s in self.cfg.servers.iter_mut().filter(|s| s.host == host) {
                         if s.lan.as_deref() != Some(local.as_str()) {
@@ -580,14 +590,33 @@ fn dev_screenshot(ctx: &egui::Context) {
 
 /// The address to use for `host` from here: `host` itself when it answers,
 /// else its address on this network (the one found before, or a fresh search).
-fn reach(host: &str, known_lan: Option<&str>, tx: &Sender<Msg>) -> Option<String> {
-    if web::alive(host) {
-        return Some(host.to_string());
+/// The base URL to sign in at: HTTPS when `host` offers it, plain HTTP only for
+/// a server that never has (`pinned_tls` false) or for its address on this
+/// network.
+fn reach(host: &str, known_lan: Option<&str>, pinned_tls: bool, tx: &Sender<Msg>) -> anyhow::Result<String> {
+    match web::probe(host) {
+        Some(true) => {
+            let _ = tx.send(Msg::Alive(host.to_string(), true, None, true));
+            return Ok(web::base(host, true));
+        }
+        Some(false) if pinned_tls => anyhow::bail!(
+            "{host} answered only without encryption, though it used HTTPS before. Your password wasn't sent; try again later or tell the server's host."
+        ),
+        Some(false) => {
+            config::log(&format!("{host}: no HTTPS, signing in over plain HTTP"));
+            let _ = tx.send(Msg::Alive(host.to_string(), true, None, false));
+            return Ok(web::base(host, false));
+        }
+        None => {}
     }
     let _ = tx.send(Msg::Status(format!("{host} didn't answer; looking for it on this network…")));
-    let found = lan::find(host, known_lan)?;
-    let _ = tx.send(Msg::Alive(host.to_string(), true, Some(found.clone())));
-    Some(found)
+    let Some(found) = lan::find(host, known_lan) else {
+        anyhow::bail!(
+            "The server at {host} didn't answer. If security software (such as Bitdefender) blocked the launcher, allow XIVLegacy in it, or ask the server's host to turn on HTTPS."
+        );
+    };
+    let _ = tx.send(Msg::Alive(host.to_string(), true, Some(found.clone()), false));
+    Ok(web::base(&found, false))
 }
 
 /// The game's own icon (from the player's ffxivgame.exe), for the window and taskbar.
@@ -903,6 +932,18 @@ impl App {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
             ui.painter().circle_filled(dot.center(), 5.0, color);
             ui.colored_label(color, text);
+            let lan = self.cfg.servers[self.cfg.server].lan.is_some();
+            match (self.alive.get(self.cfg.host()), self.secure.get(self.cfg.host())) {
+                (Some(true), Some(true)) => {
+                    ui.colored_label(egui::Color32::from_rgb(90, 200, 120), "· Secure")
+                        .on_hover_text("Your password is sent encrypted (HTTPS).");
+                }
+                (Some(true), Some(false)) if !lan => {
+                    ui.colored_label(egui::Color32::from_rgb(235, 180, 80), "· Not encrypted")
+                        .on_hover_text("This server doesn't use HTTPS, so your password crosses the internet unencrypted. Don't reuse a password from anywhere else, and ask the server's host to turn HTTPS on.");
+                }
+                _ => {}
+            }
             if ui.small_button(if self.editing { "Done" } else { "Edit…" }).clicked() {
                 self.editing = !self.editing;
             }
@@ -929,7 +970,7 @@ impl App {
                     let host = self.new_host.trim().to_string();
                     if ui.add_enabled(game::host_slot(&host).is_ok(), egui::Button::new("Add")).clicked() {
                         let name = if self.new_name.trim().is_empty() { host.clone() } else { self.new_name.trim().to_string() };
-                        self.cfg.servers.push(Server { name, host, lan: None });
+                        self.cfg.servers.push(Server { name, host, lan: None, tls: false });
                         self.cfg.server = self.cfg.servers.len() - 1;
                         self.cfg.save();
                         self.new_name.clear();
