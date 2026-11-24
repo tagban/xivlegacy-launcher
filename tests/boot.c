@@ -36,6 +36,7 @@
 #include "ws2.h"
 #include "xiv_boot.h"
 #include "xiv_crashlog.h"
+#include "walk.h"
 
 #define GAME_DIR "C:\\Program Files\\SquareEnix\\FINAL FANTASY XIV"
 /* The user profile the game sees (Documents\\My Games\\..., AppData) lives in a folder of ours. */
@@ -698,7 +699,8 @@ static void stall_later(void* arg)
  *   stall <ms>              hold the guest lock that long (a hitch)
  *   stallbg <delay> <ms>    the same, from another thread after delay ms (a hitch during a look)
  *   lag <hold> <period> <s> hold the lock hold ms out of every period ms for s seconds (a slow PC)
- *   wheel <notches> [count] mouse wheel turns, count times */
+ *   wheel <notches> [count] mouse wheel turns, count times
+ *   walkto X Z [stop] [near SX SZ], walkpath FILE [stop] [near SX SZ], walkstop, walkwhere: walk.c */
 static void control_thread(void* arg)
 {
     const char* path = (const char*)arg;
@@ -718,7 +720,9 @@ static void control_thread(void* arg)
             SDL_WindowID id = game_window();
             plat_sleep_ms(50);
             float x = 0, y = 0;
-            if (!strncmp(line, "key ", 4))
+            if (walk_command(line, id))
+                ; /* walkto, walkpath, walkstop, walkwhere (walk.c) */
+            else if (!strncmp(line, "key ", 4))
             {
                 /* key ctrl+<name>: with Ctrl held (the bug-report key is ctrl+F12) */
                 int ctrl = !strncmp(line + 4, "ctrl+", 5);
@@ -726,7 +730,7 @@ static void control_thread(void* arg)
                 if (sc != SDL_SCANCODE_UNKNOWN)
                     push_key_mod(id, sc, ctrl ? SDL_KMOD_LCTRL : SDL_KMOD_NONE);
             }
-            else if ((!strncmp(line, "click ", 6) || !strncmp(line, "move ", 5)) && sscanf(strchr(line, ' ') + 1, "%f %f", &x, &y) == 2)
+            else if ((!strncmp(line, "click ", 6) || !strncmp(line, "rclick ", 7) || !strncmp(line, "move ", 5)) && sscanf(strchr(line, ' ') + 1, "%f %f", &x, &y) == 2)
             {
                 SDL_Event e;
                 memset(&e, 0, sizeof e);
@@ -735,11 +739,12 @@ static void control_thread(void* arg)
                 e.motion.windowID = id, e.motion.x = x, e.motion.y = y;
                 SDL_PushEvent(&e);
                 plat_sleep_ms(80);
-                for (int down = 1; line[0] == 'c' && down >= 0; --down)
+                /* rclick: the right button (on an enemy it readies you and engages) */
+                for (int down = 1; line[0] != 'm' && down >= 0; --down)
                 {
                     memset(&e, 0, sizeof e);
                     e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
-                    e.button.windowID = id, e.button.button = SDL_BUTTON_LEFT, e.button.down = down, e.button.clicks = 1;
+                    e.button.windowID = id, e.button.button = line[0] == 'r' ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT, e.button.down = down, e.button.clicks = 1;
                     e.button.x = x, e.button.y = y;
                     SDL_PushEvent(&e);
                     plat_sleep_ms(80);
