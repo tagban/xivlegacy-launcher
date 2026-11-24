@@ -385,11 +385,13 @@ impl App {
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         thread::spawn(move || {
             let r = (|| -> anyhow::Result<()> {
-                let target = reach(&host, known_lan.as_deref(), pinned_tls, &tx)?;
+                // `base` is the sign-in address (https://host or http://host:54993); `target` is
+                // the bare server name or LAN address the game's lobby connection uses.
+                let (base, target) = reach(&host, known_lan.as_deref(), pinned_tls, &tx)?;
                 if create {
-                    web::signup(&target, &user, &pass)?;
+                    web::signup(&base, &user, &pass)?;
                 }
-                let sid = web::login(&target, &user, &pass)?;
+                let sid = web::login(&base, &user, &pass)?;
                 config::set_password(&host, &user, remember.then_some(pass.as_str()));
                 let say = |t: &str| {
                     let _ = tx.send(Msg::Status(t.to_string()));
@@ -416,7 +418,7 @@ impl App {
                     None
                 };
                 say("Starting the game…");
-                config::log(&format!("joining {host} via {target}"));
+                config::log(&format!("joining {host} via {target} (sign-in {base})"));
                 let (w, h) = game_settings.size();
                 if let Err(e) = settings::apply_config_sys(&settings::my_games(module.is_some()), &game_settings) {
                     config::log(&format!("couldn't write config.sys: {e}"));
@@ -590,14 +592,15 @@ fn dev_screenshot(ctx: &egui::Context) {
 
 /// The address to use for `host` from here: `host` itself when it answers,
 /// else its address on this network (the one found before, or a fresh search).
-/// The base URL to sign in at: HTTPS when `host` offers it, plain HTTP only for
-/// a server that never has (`pinned_tls` false) or for its address on this
-/// network.
-fn reach(host: &str, known_lan: Option<&str>, pinned_tls: bool, tx: &Sender<Msg>) -> anyhow::Result<String> {
+/// Finds the server. Returns the base URL to sign in at (HTTPS when `host` offers it, plain
+/// HTTP only for a server that never has, `pinned_tls` false, or for its address on this
+/// network) and the bare host, name or LAN address, that the game's lobby connection uses.
+/// The game takes a host, never a URL.
+fn reach(host: &str, known_lan: Option<&str>, pinned_tls: bool, tx: &Sender<Msg>) -> anyhow::Result<(String, String)> {
     match web::probe(host) {
         Some(true) => {
             let _ = tx.send(Msg::Alive(host.to_string(), true, None, true));
-            return Ok(web::base(host, true));
+            return Ok((web::base(host, true), host.to_string()));
         }
         Some(false) if pinned_tls => anyhow::bail!(
             "{host} answered only without encryption, though it used HTTPS before. Your password wasn't sent; try again later or tell the server's host."
@@ -605,7 +608,7 @@ fn reach(host: &str, known_lan: Option<&str>, pinned_tls: bool, tx: &Sender<Msg>
         Some(false) => {
             config::log(&format!("{host}: no HTTPS, signing in over plain HTTP"));
             let _ = tx.send(Msg::Alive(host.to_string(), true, None, false));
-            return Ok(web::base(host, false));
+            return Ok((web::base(host, false), host.to_string()));
         }
         None => {}
     }
@@ -616,7 +619,7 @@ fn reach(host: &str, known_lan: Option<&str>, pinned_tls: bool, tx: &Sender<Msg>
         );
     };
     let _ = tx.send(Msg::Alive(host.to_string(), true, Some(found.clone()), false));
-    Ok(web::base(&found, false))
+    Ok((web::base(&found, false), found))
 }
 
 /// The game's own icon (from the player's ffxivgame.exe), for the window and taskbar.
