@@ -124,7 +124,12 @@ int xiv_boot_prepare(int* argcp, char** argv)
     ws2_init();
     /* XIVLEGACY_LOBBY: the server, by name or IPv4 address (default 127.0.0.1, a local server) */
     {
-        const char* lobby = getenv("XIVLEGACY_LOBBY") ? getenv("XIVLEGACY_LOBBY") : "127.0.0.1";
+        const char* given = getenv("XIVLEGACY_LOBBY") ? getenv("XIVLEGACY_LOBBY") : "127.0.0.1";
+        /* a URL (https://host:port/...) still names one host: keep only that part */
+        char lobby[256];
+        const char* scheme = strstr(given, "://");
+        snprintf(lobby, sizeof lobby, "%s", scheme ? scheme + 3 : given);
+        lobby[strcspn(lobby, ":/")] = 0;
         struct addrinfo hints, *res = NULL;
         memset(&hints, 0, sizeof hints);
         hints.ai_family = AF_INET;
