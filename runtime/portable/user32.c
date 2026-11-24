@@ -664,7 +664,11 @@ static void pump(void)
             if (g_close_handler && g_close_handler())
                 break;
             rt_log("[recomp] quit\n");
-            fflush(NULL);
+            /* stdout and stderr only (rt_log flushes its own file): fflush(NULL) waits for every
+             * stream's lock, and a thread blocked reading one (the test client's control fifo in
+             * fgets) holds its lock for good, so a quit (SIGTERM included) never got to _Exit */
+            fflush(stdout);
+            fflush(stderr);
             _Exit(0);
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
         case SDL_EVENT_WINDOW_FOCUS_LOST:
