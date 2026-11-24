@@ -151,7 +151,7 @@ def boot(args):
     objdir, flags = runtime_objdir('boot'), ['-O1', '-Wall'] + RUNTIME_FLAGS
     flags_changed(objdir, flags)
     objs = compile_stale(generated(), 'build/gen', GEN_FLAGS)
-    objs += compile_stale(RUNTIME + BOOT_ONLY + ['tests/boot.c'], objdir, flags, ('runtime', 'runtime/portable'))
+    objs += compile_stale(RUNTIME + BOOT_ONLY + ['tests/boot.c', 'tests/walk.c'], objdir, flags, ('runtime', 'runtime/portable'))
     run(['clang', '-o', 'build/boot'] + objs + LIBS)
     if args.run:
         if not args.game:
@@ -211,7 +211,7 @@ def host(args):
         return
     objdir, flags = runtime_objdir('host'), ['-O1', '-Wall', '-DXIVLEGACY_SPLIT'] + RUNTIME_FLAGS
     flags_changed(objdir, flags)
-    objs = compile_stale(RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c'], objdir, flags,
+    objs = compile_stale(RUNTIME + ['runtime/portable/xiv_load.c', 'tests/boot.c', 'tests/walk.c'], objdir, flags,
                          ('runtime', 'runtime/portable'))
     run(['clang', '-o', 'build/xivlegacy-host'] + objs + LIBS)
     print('built build/xivlegacy-host; run: build/xivlegacy-host --module build/xivlegacy-game%s <1.23b install>'

@@ -352,6 +352,13 @@ static void sh_connect(Guest* g)
         gt_set_error(WSAEFAULT);
         RET(GUEST_SOCKET_ERROR, 3);
     }
+    /* XIVLEGACY_LOBBY_PORT: the lobby's port when it isn't 54994 (the exe always dials 54994), so a
+     * second local server can run beside the first */
+    static int lobby_port = -1;
+    if (lobby_port < 0)
+        lobby_port = getenv("XIVLEGACY_LOBBY_PORT") ? atoi(getenv("XIVLEGACY_LOBBY_PORT")) : 0;
+    if (lobby_port > 0 && lobby_port < 65536 && ntohs(a.sin_port) == 54994)
+        a.sin_port = htons((uint16_t)lobby_port);
     int nb = s->nonblocking;
     if (!nb)
         gt_unlock();
