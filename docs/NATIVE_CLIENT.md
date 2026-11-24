@@ -34,6 +34,13 @@ python3 tools/build.py boot
 build/boot "<1.23b install>" <56-character session id>
 ```
 
+Run the recompiler again whenever `meta/*.patches.json` or the launcher's hooks change: a client built
+on an older `generated/c` lacks those patches. `table.c` records the patches recomp applied (a stamp)
+and the hooks it was given, and `tools/build.py` stops when they don't match `meta/` and
+`crates/launcher/src/make.rs` (`XIVLEGACY_STALE_TRANSLATION=1` builds anyway). Test clients built on a
+translation from before the 0x616F93 camera patch flew the camera to the world's origin after warps in
+Ul'dah for a week (2026-11-24).
+
 The graphics back end is chosen at build time: `XIVLEGACY_GFX=wgpu python3 tools/build.py boot` (or
 `host`) builds on wgpu-native (`brew install wgpu-native`, or `WGPU_NATIVE=<prefix>`); macOS defaults to
 Metal, Windows and Linux always use wgpu. `tools/wgsl_check.c` translates a shader dump

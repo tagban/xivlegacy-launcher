@@ -19,7 +19,9 @@ code: never commit it.
 """
 import argparse
 import concurrent.futures
+import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -119,10 +121,57 @@ def compile_stale(sources, objdir, flags, header_dirs=(), cc=None):
     return objs
 
 
+PATCHES = 'meta/ffxivgame.2012.09.19.0001.patches.json'
+
+
+def patch_stamp(path):
+    """crates/recomp's patch_stamp over a patches.json: FNV-1a 64 of '<va 08x>:<bytes hex>;' per patch"""
+    h = 0xcbf29ce484222325
+    patches = json.load(open(path))['patches']
+    for p in patches:
+        s = '%08x:%s;' % (int(p['va'], 16), ''.join(p['bytes'].split()).lower())
+        for c in s.encode():
+            h = ((h ^ c) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return len(patches), '%016x' % h
+
+
+def launcher_hooks():
+    """the translation hooks the launcher passes (crates/launcher/src/make.rs HOOKS), as recomp records them"""
+    src = open(os.path.join(ROOT, 'crates/launcher/src/make.rs')).read()
+    block = re.search(r'const HOOKS: \[\(&str, u64\); \d+\] = \[(.*?)\];', src, re.S)
+    pairs = re.findall(r'\("(\w+)",\s*0x([0-9a-fA-F_]+)\)', block.group(1)) if block else []
+    return ','.join(sorted('%s=%#x' % (n, int(a.replace('_', ''), 16)) for n, a in pairs))
+
+
+def check_translation(d):
+    """A translation made before meta/'s patches (or the launcher's hooks) changed builds a client
+    without them: test clients built on a stale generated/c lacked the camera fix at patches.json
+    0x616F93 for a week (2026-11-24: the camera flew off to the world's origin in Ul'dah). table.c
+    records what recomp was given; XIVLEGACY_STALE_TRANSLATION=1 builds anyway."""
+    head = open(os.path.join(d, 'table.c')).read(4096)
+    m = re.search(r'recomp inputs: patches (\d+) stamp ([0-9a-f]{16}); hooks (\S+) \*/', head)
+    n, stamp = patch_stamp(os.path.join(ROOT, PATCHES))
+    hooks = launcher_hooks()
+    if not m:
+        problem = 'it has no record of its patches (made by a recompiler older than that record)'
+    elif (int(m.group(1)), m.group(2)) != (n, stamp):
+        problem = 'it was made with %s patches (stamp %s), %s has %d (stamp %s)' % (m.group(1), m.group(2), PATCHES, n, stamp)
+    elif hooks and m.group(3) != hooks:
+        problem = 'it was made with hooks %s, the launcher passes %s' % (m.group(3), hooks)
+    else:
+        return
+    msg = 'generated/c is stale: %s.\nRun the recompiler again (docs/NATIVE_CLIENT.md, "Building and running").' % problem
+    if os.environ.get('XIVLEGACY_STALE_TRANSLATION') == '1':
+        print('warning: ' + msg + '\n(XIVLEGACY_STALE_TRANSLATION=1: building anyway)')
+        return
+    raise SystemExit(msg + '\nXIVLEGACY_STALE_TRANSLATION=1 builds anyway.')
+
+
 def generated():
     d = os.path.join(ROOT, 'generated', 'c')
     if not os.path.isdir(d):
         raise SystemExit('no generated/c: run the recompiler first (crates/recomp)')
+    check_translation(d)
     return ['generated/c/%s' % f for f in sorted(os.listdir(d)) if f.endswith('.c')]
 
 
