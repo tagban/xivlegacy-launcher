@@ -156,6 +156,24 @@ static void unpin(void)
     SDL_SetWindowRelativeMouseMode(w->sdl, false);
 }
 
+/* Windows: a mouse button held (as SDL's events have it) is already up on the mouse. In relative
+ * mode SDL takes the buttons from raw input, which it only starts reading then, and ignores the
+ * window's WM_xBUTTONUP: a release after the press but before the game's first SetCursorPos of the
+ * drag (a quick click, a slow frame) waits in the window's messages, is dropped, and the button
+ * stays down for good - the camera turning with the mouse, the cursor gone, until the next click.
+ * So no camera drag starts on a release not yet seen, and one let go while relative mode was
+ * starting is called off; with relative mode off the WM_xBUTTONUP comes through. Scripted presses
+ * are not SDL's state and not checked. macOS and Linux deliver the release in relative mode too. */
+static int released_unseen(void)
+{
+#if defined(_WIN32)
+    SDL_MouseButtonFlags real = g_held & SDL_GetMouseState(NULL, NULL);
+    return real && (SDL_GetGlobalMouseState(NULL, NULL) & real) != real;
+#else
+    return 0;
+#endif
+}
+
 static Wnd* wnd_of_sdl(SDL_WindowID id)
 {
     for (int i = 0; i < MAX_WINDOWS; ++i)
@@ -1560,8 +1578,13 @@ static void sh_SetCursorPos(Guest* g)
         float fy = g_pinned ? g_pin_fy - (float)(int)g_pin_fy : 0.0f;
         g_mouse_wnd = w->hwnd, g_mouse_x = x - w->x, g_mouse_y = y - w->y;
         g_pin_fx = (float)g_mouse_x + fx, g_pin_fy = (float)g_mouse_y + fy;
-        if (g_held && !g_pinned && SDL_SetWindowRelativeMouseMode(w->sdl, true))
-            g_pinned = 1, g_pin_wnd = w->hwnd; /* a camera drag (g_pinned) */
+        if (g_held && !g_pinned && !released_unseen() && SDL_SetWindowRelativeMouseMode(w->sdl, true))
+        {
+            if (released_unseen()) /* let go while relative mode was starting: no drag after all */
+                SDL_SetWindowRelativeMouseMode(w->sdl, false);
+            else
+                g_pinned = 1, g_pin_wnd = w->hwnd; /* a camera drag (g_pinned) */
+        }
         if (!g_pinned) /* the real cursor, at the point as the window is shown */
             SDL_WarpMouseInWindow(w->sdl, to_shown_x(w, g_mouse_x), to_shown_y(w, g_mouse_y));
         RET(1, 2);
