@@ -18,6 +18,7 @@
 #include "xiv_monster_moves.h"
 #include "xiv_monster_points.h"
 #include "xiv_notice.h"
+#include "xiv_partynpc.h"
 
 #define INVALID_HANDLE 0xFFFFFFFFu
 #define ERROR_FILE_NOT_FOUND 2u
@@ -218,6 +219,8 @@ static void sh_CreateFileA(Guest* g)
         else if (xiv_monster_points_redirect(ARGS(0), host, alt, sizeof alt))
             memcpy(host, alt, sizeof host);
         else if (xiv_journalmap_redirect(ARGS(0), host, alt, sizeof alt))
+            memcpy(host, alt, sizeof host);
+        else if (xiv_partynpc_redirect(ARGS(0), host, alt, sizeof alt))
             memcpy(host, alt, sizeof host);
     }
     PlatStat st;
