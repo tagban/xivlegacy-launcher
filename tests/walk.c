@@ -267,8 +267,12 @@ static void walk_thread(void* arg)
     float mo_x = 0.0f, mo_z = 0.0f; /* where the player was mo_t ms ago, for the facing check */
     int mo_bad = 0;
     const char* why = "stopped";
+    float from_x = W.pts[0].x, from_z = W.pts[0].z; /* where the leg to the current point starts */
     if (where(p))
+    {
+        from_x = p[0], from_z = p[2];
         say("start at %.2f %.2f %.2f facing %.2f, %d points, stop %.2f", p[0], p[1], p[2], p[3], W.n, W.stop_dist);
+    }
     while (!W.stop)
     {
         plat_sleep_ms(TICK_MS);
@@ -316,10 +320,13 @@ static void walk_thread(void* arg)
         Pt* t = &W.pts[i];
         int last = i == W.n - 1;
         float dx = t->x - p[0], dz = t->z - p[2], d = sqrtf(dx * dx + dz * dz);
-        /* advance: close enough, or past an inner point along its segment */
-        if (!last && (d < ADVANCE || (i + 1 < W.n && (W.pts[i + 1].x - t->x) * (p[0] - t->x) + (W.pts[i + 1].z - t->z) * (p[2] - t->z) > 0 &&
-                                         d < 3.0f)))
+        /* advance: close enough, or past an inner point along the leg that leads to it (overshot, or
+         * pushed past it along a wall). Being ahead of the next leg is not enough: at a sharp turn that
+         * holds up to 3 yalms inside the corner, and the straight line from there to the next point cuts
+         * through what the turn goes around (the ramp at the Roost's south exit, xivlegacy-server #458). */
+        if (!last && (d < ADVANCE || ((t->x - from_x) * (p[0] - t->x) + (t->z - from_z) * (p[2] - t->z) > 0 && d < 3.0f)))
         {
+            from_x = t->x, from_z = t->z;
             i++, tries = 0, best = 1e9f, best_t = now_ms();
             continue;
         }
